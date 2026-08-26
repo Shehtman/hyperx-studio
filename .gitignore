@@ -1,0 +1,8 @@
+# Сборка
+build/
+dist/
+hyperx-studio
+
+# Локальные артефакты
+*.deb
+*.log

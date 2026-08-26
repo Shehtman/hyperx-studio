@@ -1,0 +1,255 @@
+<div align="center">
+
+<img src="docs/banner.svg" alt="HyperX Studio" width="100%">
+
+**English** · [Русский](README.ru.md)
+
+[![CI](https://github.com/Shehtman/hyperx-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/Shehtman/hyperx-studio/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.21%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev)
+[![Dependencies](https://img.shields.io/badge/dependencies-none-22c55e?style=flat-square)](go.mod)
+[![Binary](https://img.shields.io/badge/binary-6.3%20MB%20static-8a8a8a?style=flat-square)](#build-from-source)
+[![Platform](https://img.shields.io/badge/platform-Linux-8a8a8a?style=flat-square&logo=linux&logoColor=white)](#requirements)
+
+### Per-key RGB control for the HyperX Alloy Origins on Linux
+
+One static binary. No OpenRGB, no daemons, no runtime.
+
+</div>
+
+> **Unofficial project.** Not affiliated with HP Inc. or HyperX. The device
+> protocol was studied from the open OpenRGB implementation; the code here was
+> written from scratch.
+
+---
+
+## Why
+
+NGENUITY is Windows-only, and OpenRGB exposes this keyboard with a single mode:
+`Direct`. There are no firmware effects available on Linux, so every animation
+is computed in software and pushed frame by frame.
+
+That turns out to be an advantage — nothing is limited by what the firmware
+happens to support.
+
+<table>
+<tr><td width="50%" valign="top">
+
+### What you get
+
+- **Zero dependencies.** `ldd` reports *not a dynamic executable*. Runs on any
+  x86-64 Linux.
+- **One process.** The keyboard is opened directly over `/dev/hidraw`; there is
+  no middleman server to accidentally close.
+- **Lighting survives exit.** The device keeps the last frame as long as it has
+  power.
+- **12 effects** with a live preview of the actual frame being sent.
+- **Global keypress reaction** through evdev, without grabbing the device.
+- **Two languages** — English and Russian, switchable at runtime.
+
+</td><td width="50%" valign="top">
+
+<img src="docs/panel.svg" alt="Control panel" width="100%">
+
+</td></tr>
+</table>
+
+---
+
+## Requirements
+
+| | |
+|---|---|
+| **OS** | Debian 11+ / Ubuntu 22.04+ or any x86-64 Linux |
+| **Hardware** | HyperX Alloy Origins (`03f0:0591`), full-size |
+| **Runtime** | none — the binary is statically linked |
+| **Build** | Go 1.21+ (only if building from source) |
+
+A Chromium-based browser is used to show the window in application mode. With
+Firefox only, the interface opens as a regular window instead.
+
+## Install
+
+Grab the package from [Releases](https://github.com/Shehtman/hyperx-studio/releases) and install it:
+
+```bash
+sudo apt install ./hyperx-studio_1.0.0-1_amd64.deb
+```
+
+The package ships the binary, a desktop entry and a udev rule. **Unplug and
+plug the keyboard back in afterwards** — permissions have to be applied anew.
+
+### Build from source
+
+```bash
+git clone https://github.com/Shehtman/hyperx-studio.git
+cd hyperx-studio
+go build -o hyperx-studio ./cmd/hyperx-studio
+sudo ./hyperx-studio --install-udev
+```
+
+## Usage
+
+```bash
+hyperx-studio              # open the window
+hyperx-studio --no-window  # run in the background (used by autostart)
+hyperx-studio --quit       # stop the running instance
+hyperx-studio --apply      # apply the saved scheme and exit
+hyperx-studio --off        # turn the lighting off and exit
+```
+
+The window can be closed — lighting keeps running. Launching again shows the
+window of the running instance instead of starting a second one.
+
+`--apply` is meant for static schemes: colours are set, the process exits, and
+the keyboard keeps them. Animations need the program running.
+
+## Effects
+
+| | | |
+|---|---|---|
+| **Static** | **Breathing** | **Spectrum cycle** |
+| **Rainbow wave** | **Two-colour wave** | **Gradient** |
+| **Twinkle** | **Rain** | **Fire** |
+| **Snake** | **Key ripple** | **Key flash** |
+
+The last two are reactive and can be layered on top of any other effect, with
+their own speed, fade and colour.
+
+## Persistence
+
+Three cases behave differently, and the distinction matters:
+
+| Situation | What happens |
+|---|---|
+| Application closed, even by `kill -9` | Keyboard keeps displaying the last frame |
+| Machine rebooted | Lighting returns to the factory scheme |
+| Next launch | Effect, parameters, per-key colours and selection are restored |
+
+Schemes cannot be written into the keyboard's own memory: the device only
+accepts direct frames. Enabling **Start on login** is the only way to have your
+lighting back after a reboot.
+
+Settings are written to `~/.config/hyperx-studio/config.json` 1.5 seconds after
+any change, atomically through a temporary file.
+
+## How it works
+
+```
+┌────────────┐   HID feature reports   ┌──────────────────┐
+│  effects   │ ──────────────────────▶ │ Alloy Origins    │
+│  engine    │      /dev/hidraw        │ 107 LEDs         │
+└────────────┘                         └──────────────────┘
+      ▲                                          │
+      │ keystrokes                               │ USB
+      │ /dev/input/event*                        ▼
+┌────────────┐                          ┌──────────────────┐
+│  reactive  │                          │  your fingers    │
+│  layer     │ ◀────────────────────────│                  │
+└────────────┘                          └──────────────────┘
+```
+
+A frame is nine 65-byte feature reports: one that switches the keyboard into
+direct mode and eight carrying colours, 16 per packet, 4 bytes each — an `0x81`
+marker plus three components.
+
+There are 126 positions in a frame but only 107 LEDs: nineteen positions are
+physically absent and must still receive zeroes, otherwise the layout shifts
+and colours land on neighbouring keys.
+
+<details>
+<summary><b>Details worth knowing</b></summary>
+
+**Mode switching happens on every frame,** not once at open time. Send it only
+once and the keyboard eventually falls back to the scheme stored in its own
+memory, overriding what the program draws.
+
+**Device lookup is by identifiers, not by path.** The `/dev/hidrawN` number
+changes when the cable is replugged, so the program searches for the keyboard
+and always takes USB interface `00` — the one that owns the lighting. If a
+frame fails to send, the device is reopened automatically.
+
+**Keystrokes are stamped in the same clock as frames.** Mixing the absolute
+`time.perf_counter`-style clock with time-since-start sends hit ages far
+negative: ripples get a negative radius and never draw, flashes stick at full
+brightness. There is a test for exactly that.
+
+**Reactive input never grabs the device**, so typing is unaffected.
+
+</details>
+
+## ANSI or ISO
+
+The layout has to match your keyboard; it is not detected automatically. Tell
+them apart by the Enter key:
+
+- **ANSI** — Enter is one row tall, with a separate `\ |` key above it.
+- **ISO** — Enter is L-shaped across two rows, with `#` to the left of its
+  lower part and an extra key next to `Z`.
+
+## Troubleshooting
+
+<details>
+<summary><b>“Keyboard not found”</b></summary>
+
+The udev rule is missing, so the device is only visible to root:
+
+```bash
+sudo hyperx-studio --install-udev
+```
+
+Then physically reconnect the keyboard — `udevadm trigger` does not reliably
+re-apply permissions to an already-connected device. Inspect the rule with
+`hyperx-studio --print-udev`.
+
+</details>
+
+<details>
+<summary><b>Reactive effects do nothing</b></summary>
+
+No read access to `/dev/input/event*`. The udev rule grants it through the
+`uaccess` tag; otherwise add yourself to the `input` group and log back in.
+
+</details>
+
+<details>
+<summary><b>Nothing lights up except one key</b></summary>
+
+**Selected only** is enabled. It deliberately blanks every key outside the
+selection; a notice in the panel says how many are lit while it is on.
+
+</details>
+
+## Development
+
+```bash
+go test ./...           # all tests, no hardware required
+go run ./cmd/gen-assets # regenerate README artwork from the real layout
+./build-deb.sh          # build the .deb
+```
+
+| Package | Responsibility |
+|---|---|
+| `internal/keyboard` | hidraw protocol, frame layout across slots |
+| `internal/layout` | key geometry, LED and evdev bindings |
+| `internal/effects` | animation engine |
+| `internal/input` | keystroke reading |
+| `internal/engine` | state, render loop, persistence |
+| `internal/webui` | interface, embedded into the binary |
+| `internal/i18n` | command-line messages |
+
+Tests cover the frame layout, LED bindings, reactive timing, settings
+persistence and translation completeness — none of them need the keyboard.
+
+## Contributing
+
+Issues and pull requests are welcome at [Shehtman/hyperx-studio](https://github.com/Shehtman/hyperx-studio).
+Run `go test ./...` before sending a change — the whole suite works without the
+keyboard.
+
+## License
+
+[MIT](LICENSE).
+
+Hardware knowledge comes from [OpenRGB](https://openrgb.org) (GPLv2); this is an
+independent implementation and contains none of its source.

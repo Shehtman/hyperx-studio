@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HyperX Studio</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <b>HyperX Studio</b>
+    <span class="dot" id="dot" aria-hidden="true"></span>
+    <span class="mono dim" id="devtext"></span>
+    <span class="grow"></span>
+    <span class="mono dim" id="fps-real"></span>
+    <button class="btn" id="pause" aria-pressed="false" data-i18n="pause">Pause</button>
+    <button class="btn" id="blackout" data-i18n="blackout">Turn off</button>
+  </header>
+
+  <main>
+    <div id="board">
+      <svg id="kb" role="group" data-i18n-aria="keyboardAria" aria-label="Keyboard layout"></svg>
+    </div>
+
+    <aside>
+      <p class="warn" id="warn" hidden></p>
+
+      <div class="grp">
+        <div class="row"><label for="effect" data-i18n="effect">Effect</label><select id="effect"></select></div>
+        <div class="row"><label for="overlay" data-i18n="overlay">Overlay</label><select id="overlay"></select></div>
+      </div>
+
+      <div class="grp" id="params">
+        <div class="row" data-p="brightness">
+          <label for="brightness" data-i18n="brightness">Brightness</label>
+          <input type="range" id="brightness" min="0" max="100"><output id="brightness-v"></output>
+        </div>
+        <div class="row" data-p="speed">
+          <label for="speed" data-i18n="speed">Speed</label>
+          <input type="range" id="speed" min="5" max="500"><output id="speed-v"></output>
+        </div>
+        <div class="row" data-p="angle">
+          <label for="angle" data-i18n="angle">Angle</label>
+          <input type="range" id="angle" min="0" max="360"><output id="angle-v"></output>
+        </div>
+        <div class="row" data-p="scale">
+          <label for="scale" data-i18n="scale">Scale</label>
+          <input type="range" id="scale" min="10" max="500"><output id="scale-v"></output>
+        </div>
+        <div class="row" data-p="density">
+          <label for="density" data-i18n="density">Density</label>
+          <input type="range" id="density" min="1" max="100"><output id="density-v"></output>
+        </div>
+        <div class="row" data-p="length">
+          <label for="length" data-i18n="length">Length</label>
+          <input type="range" id="length" min="1" max="40"><output id="length-v"></output>
+        </div>
+        <div class="row" data-p="color1">
+          <label for="color1" data-i18n="color">Colour</label>
+          <input type="color" id="color1">
+        </div>
+        <div class="row" data-p="color2">
+          <label for="color2" data-i18n="color2">Second</label>
+          <input type="color" id="color2">
+        </div>
+      </div>
+
+      <div class="grp" id="react">
+        <h2 data-i18n="reaction">Keypress reaction</h2>
+        <div class="row">
+          <label for="reactSpeed" data-i18n="speed">Speed</label>
+          <input type="range" id="reactSpeed" min="10" max="400"><output id="reactSpeed-v"></output>
+        </div>
+        <div class="row">
+          <label for="reactFade" data-i18n="fade">Fade</label>
+          <input type="range" id="reactFade" min="15" max="400"><output id="reactFade-v"></output>
+        </div>
+        <div class="row">
+          <label for="reactColor" data-i18n="color">Colour</label>
+          <input type="color" id="reactColor">
+        </div>
+        <div class="row check">
+          <input type="checkbox" id="rainbow">
+          <label for="rainbow" data-i18n="rainbow">Rainbow</label>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="seg">
+          <button class="btn" id="sel-all" data-i18n="selAll">All</button>
+          <button class="btn" id="sel-none" data-i18n="selNone">Clear</button>
+          <button class="btn" id="sel-inv" data-i18n="selInvert">Invert</button>
+          <span class="mono dim" id="selcount">0</span>
+        </div>
+        <div id="paint">
+          <div class="swatches" id="swatches"></div>
+          <div class="seg">
+            <label class="btn" for="paintpick">
+              <span data-i18n="customColour">Custom</span>
+              <input type="color" id="paintpick" data-i18n-aria="customColourAria" aria-label="Fill with a custom colour">
+            </label>
+            <button class="btn" id="clearpaint" data-i18n="resetPaint">Reset</button>
+          </div>
+        </div>
+        <div class="row check">
+          <input type="checkbox" id="mask">
+          <label for="mask" data-i18n="selectedOnly">Selected only</label>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="row">
+          <label for="variant" data-i18n="layout">Layout</label>
+          <select id="variant">
+            <option value="ansi">ANSI</option>
+            <option value="iso">ISO</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="fps" data-i18n="fps">Frames/s</label>
+          <input type="range" id="fps" min="5" max="60"><output id="fps-v"></output>
+        </div>
+        <div class="row check">
+          <input type="checkbox" id="autostart">
+          <label for="autostart" data-i18n="autostart">Start on login</label>
+        </div>
+        <div class="row">
+          <label for="lang" data-i18n="language">Language</label>
+          <select id="lang">
+            <option value="en">English</option>
+            <option value="ru">Русский</option>
+          </select>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
