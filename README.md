@@ -124,6 +124,7 @@ Three cases behave differently, and the distinction matters:
 |---|---|
 | Application closed, even by `kill -9` | Keyboard keeps displaying the last frame |
 | Machine rebooted | Lighting returns to the factory scheme |
+| Machine suspended | Keyboard is released for the duration of sleep, scheme comes back on wake-up |
 | Next launch | Effect, parameters, per-key colours and selection are restored |
 
 Schemes cannot be written into the keyboard's own memory: the device only
@@ -132,6 +133,26 @@ lighting back after a reboot.
 
 Settings are written to `~/.config/hyperx-studio/config.json` 1.5 seconds after
 any change, atomically through a temporary file.
+
+### Sleep
+
+While the program is running, the keyboard is held in direct lighting mode. A
+keyboard left in that mode with no frames arriving stops signalling remote
+wakeup — and since it usually shares a USB controller with the mouse, the
+computer then cannot be woken by either.
+
+So the keyboard is handed back before the machine sleeps. The package installs
+a hook in `/usr/lib/systemd/system-sleep/`; `systemd` waits for it, so this
+always happens before processes are frozen:
+
+```bash
+hyperx-studio --sleep   # release the keyboard, restore its own mode
+hyperx-studio --wake    # take it back and repaint the saved scheme
+```
+
+There is no protocol command for leaving direct mode — neither OpenRGB nor
+NGENUITY knows one. The mode is cleared by asking the kernel to reinitialise
+the device, which the program does through `USBDEVFS_RESET`.
 
 ## How it works
 
@@ -210,6 +231,20 @@ re-apply permissions to an already-connected device. Inspect the rule with
 No read access to `/dev/input/event*`. The udev rule grants it through the
 `uaccess` tag; otherwise add yourself to the `input` group and log back in.
 
+</details>
+
+<details>
+<summary><b>The computer will not wake from sleep</b></summary>
+
+Fixed in 1.0.1. If you are upgrading from 1.0.0, make sure the sleep hook is in
+place:
+
+```bash
+ls -l /usr/lib/systemd/system-sleep/hyperx-studio
+```
+
+If the file is missing, reinstall the package. No reboot is needed — `systemd`
+picks the hook up on the next suspend.
 </details>
 
 <details>

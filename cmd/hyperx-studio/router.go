@@ -141,6 +141,18 @@ func newRouter(eng *engine.Engine, quit chan<- struct{}) http.Handler {
 		return eng.Blackout()
 	})
 
+	// Вызывается хуком systemd вокруг сна системы. Клавиатуру нужно отпустить
+	// до заморозки процессов, иначе она останется в прямом режиме и компьютер
+	// не проснётся от нажатия клавиши.
+	post("/api/power/sleep", func(*json.Decoder) error {
+		eng.Sleep()
+		return nil
+	})
+
+	post("/api/power/wake", func(*json.Decoder) error {
+		return eng.Wake()
+	})
+
 	mux.HandleFunc("/api/quit", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "нужен POST", http.StatusMethodNotAllowed)

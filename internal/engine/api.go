@@ -67,7 +67,7 @@ func (e *Engine) Snapshot() Snapshot {
 	}
 	return Snapshot{
 		State: e.st, Keys: e.ctx.Keys, Width: e.ctx.W, Height: e.ctx.H,
-		Effects: effects.All, Device: e.dev.Path(), LEDs: keyboard.LEDCount,
+		Effects: effects.All, Device: e.devPath(), LEDs: keyboard.LEDCount,
 		FPSReal: e.FPSReal, Paused: e.paused,
 		InputOK: e.InputOK, Devices: devs, Connected: e.connected,
 	}
@@ -200,8 +200,12 @@ func (e *Engine) SetPaused(on bool) {
 func (e *Engine) Blackout() error {
 	e.mu.Lock()
 	e.paused = true
+	dev := e.dev
 	e.mu.Unlock()
-	return e.dev.Off()
+	if dev == nil {
+		return errNoDevice
+	}
+	return dev.Off()
 }
 
 // SetLang меняет язык сообщений командной строки; интерфейс переключается

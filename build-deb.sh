@@ -20,7 +20,8 @@ command -v dpkg-deb >/dev/null || { echo "нужен dpkg-deb"; exit 1; }
 rm -rf "$BUILD"; mkdir -p "$BUILD" "$OUT"
 PKG="$BUILD/hyperx-studio"
 mkdir -p "$PKG/DEBIAN" "$PKG/usr/bin" "$PKG/usr/share/applications" \
-         "$PKG/usr/lib/udev/rules.d" "$PKG/usr/share/doc/hyperx-studio"
+         "$PKG/usr/lib/udev/rules.d" "$PKG/usr/share/doc/hyperx-studio" \
+         "$PKG/usr/lib/systemd/system-sleep"
 
 say "Собираю статический бинарник"
 CGO_ENABLED=0 go build -trimpath \
@@ -41,6 +42,45 @@ Terminal=false
 Categories=Utility;Settings;HardwareSettings;
 StartupWMClass=hyperx-studio
 DESKTOP
+
+cat > "$PKG/usr/lib/systemd/system-sleep/hyperx-studio" <<'HOOK'
+#!/bin/sh
+# Клавиатуру нужно отпустить перед сном системы.
+#
+# Пока программа рисует подсветку, клавиатура держится в прямом режиме. Если
+# оставить её в нём на время сна, она перестаёт будить компьютер — и тянет за
+# собой мышь, если та сидит на том же контроллере USB. Перед сном снимаем
+# прямой режим, после пробуждения возвращаем подсветку.
+#
+# systemd ждёт завершения этого скрипта, поэтому успеваем до заморозки.
+
+BIN=/usr/bin/hyperx-studio
+[ -x "$BIN" ] || exit 0
+
+# Настройки лежат в домашнем каталоге владельца, поэтому команду выполняем от
+# его имени, а не от root.
+run() {
+    user=$(ps -o user= -C hyperx-studio 2>/dev/null | head -n1 | tr -d ' ')
+    if [ -n "$user" ] && [ "$user" != root ] && command -v runuser >/dev/null 2>&1
+    then
+        runuser -u "$user" -- "$BIN" "$@" || true
+    else
+        "$BIN" "$@" || true
+    fi
+}
+
+case "$1" in
+    pre)
+        run --sleep
+        ;;
+    post)
+        # Если программа не запущена, возвращать нечего: подсветкой снова
+        # заведует сама клавиатура.
+        pgrep -x hyperx-studio >/dev/null 2>&1 && run --wake
+        ;;
+esac
+exit 0
+HOOK
 
 install -m 644 "$SRC/README.md" "$PKG/usr/share/doc/hyperx-studio/README.md"
 cat > "$PKG/usr/share/doc/hyperx-studio/copyright" <<EOF
@@ -121,7 +161,9 @@ POSTRM
 
 find "$PKG" -type d -exec chmod 755 {} +
 find "$PKG" -type f -not -path '*/DEBIAN/*' -exec chmod 644 {} +
-chmod 755 "$PKG/usr/bin/hyperx-studio" "$PKG/DEBIAN/postinst" "$PKG/DEBIAN/postrm"
+# Хук сна обязан быть исполняемым: systemd молча пропускает файлы без +x.
+chmod 755 "$PKG/usr/bin/hyperx-studio" "$PKG/DEBIAN/postinst" "$PKG/DEBIAN/postrm" \
+          "$PKG/usr/lib/systemd/system-sleep/hyperx-studio"
 
 say "Упаковываю"
 fakeroot dpkg-deb --build --root-owner-group "$PKG" "$OUT" >/dev/null

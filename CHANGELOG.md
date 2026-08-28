@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1 — 2026-08-28
+
+- Fixed: the computer could not be woken from sleep with the keyboard or the
+  mouse. The keyboard was left in direct lighting mode with no frames coming
+  in, stopped signalling remote wakeup, and took the whole USB controller down
+  with it. The keyboard is now released before sleep and picked up again after
+  wake-up, through a `systemd` sleep hook
+
 ## 1.0.0 — 2026-08-27
 
 First release.

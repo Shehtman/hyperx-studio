@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -32,6 +33,8 @@ type Engine struct {
 	frame     []keyboard.RGB
 	t0        time.Time
 	paused    bool
+	asleep    bool // устройство отпущено на время сна системы
+	loopIdle  bool // цикл рендера остановлен и к устройству не обращается
 	stop      chan struct{}
 	dirty     bool // состояние изменилось, надо сохранить
 	saveAt    time.Time
@@ -84,7 +87,21 @@ func New() (*Engine, error) {
 	return e, nil
 }
 
-func (e *Engine) DevicePath() string { return e.dev.Path() }
+func (e *Engine) DevicePath() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.devPath()
+}
+
+// devPath отдаёт путь открытого устройства. Во время сна системы оно
+// отпущено, и указателя нет — вызывать Path() напрямую нельзя.
+// Вызывается под e.mu.
+func (e *Engine) devPath() string {
+	if e.dev == nil {
+		return ""
+	}
+	return e.dev.Path()
+}
 
 // rebuild пересобирает контекст под текущую раскладку.
 func (e *Engine) rebuild() {
@@ -160,7 +177,11 @@ func (e *Engine) Run() {
 		t := start.Sub(e.t0).Seconds()
 
 		e.mu.Lock()
-		paused := e.paused
+		paused := e.paused || e.asleep
+		// Пока цикл стоит, он не трогает устройство — только в этот момент
+		// его можно безопасно закрыть перед сном системы.
+		e.loopIdle = paused
+		dev := e.dev
 		fps := e.st.FPS
 		eff, ovl := e.effect, e.overlay
 		// хиты живут не дольше времени затухания
@@ -218,7 +239,10 @@ func (e *Engine) Run() {
 			}
 		}
 
-		showErr := e.dev.Show(buf)
+		showErr := errNoDevice
+		if dev != nil {
+			showErr = dev.Show(buf)
+		}
 		if showErr != nil {
 			// после переподключения клавиатуры прежний hidraw мёртв,
 			// а номер узла меняется — ищем устройство заново
@@ -254,6 +278,97 @@ func (e *Engine) Run() {
 			time.Sleep(d)
 		}
 	}
+}
+
+// errNoDevice — устройство сейчас не открыто. Отдельная ошибка нужна, чтобы
+// цикл рендера шёл обычной веткой переподключения, а не падал на nil.
+var errNoDevice = errors.New("устройство не открыто")
+
+// Sleep отпускает клавиатуру перед сном системы.
+//
+// Без этого компьютер невозможно разбудить ни клавиатурой, ни мышью:
+// клавиатура остаётся в прямом режиме подсветки, перестаёт сигналить remote
+// wakeup и тянет за собой весь USB-контроллер, на котором сидит.
+func (e *Engine) Sleep() {
+	e.mu.Lock()
+	if e.asleep {
+		e.mu.Unlock()
+		return
+	}
+	e.asleep = true
+	lang := e.st.Lang
+	e.mu.Unlock()
+	fmt.Println(i18n.T(lang, "sleep.releasing"))
+
+	// Ждём остановки цикла: закрывать устройство во время отправки кадра
+	// нельзя. Полсекунды с запасом хватает даже на 1 кадр в секунду.
+	for i := 0; i < 100; i++ {
+		e.mu.Lock()
+		idle := e.loopIdle
+		e.mu.Unlock()
+		if idle {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if r := e.reader; r != nil {
+		r.Stop()
+	}
+	e.mu.Lock()
+	dev := e.dev
+	e.dev = nil
+	e.reader = nil
+	e.mu.Unlock()
+	if dev != nil {
+		dev.Close()
+	}
+
+	// Закрыть узел мало: прямой режим живёт в прошивке, а не в дескрипторе.
+	// Снимаем его переинициализацией устройства.
+	if err := keyboard.ResetUSB(); err != nil {
+		fmt.Println(i18n.T(lang, "sleep.resetFailed"), err)
+	}
+}
+
+// Wake возвращает клавиатуру под управление после пробуждения.
+func (e *Engine) Wake() error {
+	e.mu.Lock()
+	if !e.asleep {
+		e.mu.Unlock()
+		return nil
+	}
+	lang := e.st.Lang
+	e.mu.Unlock()
+
+	// После сна и переинициализации устройство появляется не сразу:
+	// ядру нужно заново опросить шину. Ждём до пяти секунд.
+	ok := false
+	for i := 0; i < 50; i++ {
+		if e.reopen() {
+			ok = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	reader := &input.Reader{OnKey: e.onKey}
+	started := reader.Start()
+
+	e.mu.Lock()
+	e.reader = reader
+	e.InputOK = started
+	if !started && reader.Err != nil {
+		e.InputErr = reader.Err.Error()
+	}
+	e.asleep = false
+	e.mu.Unlock()
+
+	if !ok {
+		return errors.New(i18n.T(lang, "sleep.noDeviceAfterWake"))
+	}
+	fmt.Println(i18n.T(lang, "sleep.resumed"))
+	return nil
 }
 
 // reopen пытается заново открыть устройство: номер узла hidraw после
@@ -292,8 +407,8 @@ func (e *Engine) setDisconnected(err error) {
 func (e *Engine) setConnected() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.connected {
-		fmt.Println(i18n.T(e.st.Lang, "dev.restored", e.dev.Path()))
+	if !e.connected && e.dev != nil {
+		fmt.Println(i18n.T(e.st.Lang, "dev.restored", e.devPath()))
 	}
 	e.connected = true
 }
@@ -307,6 +422,9 @@ func (e *Engine) ApplyOnce() error {
 		for i := range buf {
 			buf[i] = effects.Scale(buf[i], b)
 		}
+	}
+	if e.dev == nil {
+		return errNoDevice
 	}
 	return e.dev.Show(buf)
 }
@@ -324,5 +442,7 @@ func (e *Engine) Close() {
 		Save(st)
 	}
 	// подсветку намеренно не гасим: пусть остаётся последний кадр
-	e.dev.Close()
+	if e.dev != nil {
+		e.dev.Close()
+	}
 }

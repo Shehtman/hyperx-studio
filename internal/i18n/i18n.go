@@ -45,8 +45,12 @@ var messages = map[string]map[string]string{
 		"err.apply":        "could not apply the scheme:",
 		"err.saveSettings": "could not save settings:",
 
-		"dev.lost":     "keyboard disconnected: %v",
-		"dev.restored": "keyboard is back: %s",
+		"dev.lost":                "keyboard disconnected: %v",
+		"dev.restored":            "keyboard is back: %s",
+		"sleep.releasing":         "system is going to sleep, releasing the keyboard",
+		"sleep.resetFailed":       "could not reset the keyboard before sleep:",
+		"sleep.resumed":           "woke up, keyboard is under control again",
+		"sleep.noDeviceAfterWake": "keyboard did not come back after wake-up",
 
 		"udev.needRoot": "root privileges required: sudo %s --install-udev",
 		"udev.written":  "rule written: %s",
@@ -73,8 +77,12 @@ var messages = map[string]map[string]string{
 		"err.apply":        "не удалось применить:",
 		"err.saveSettings": "не удалось сохранить настройки:",
 
-		"dev.lost":     "клавиатура отключена: %v",
-		"dev.restored": "клавиатура снова на связи: %s",
+		"dev.lost":                "клавиатура отключена: %v",
+		"dev.restored":            "клавиатура снова на связи: %s",
+		"sleep.releasing":         "система уходит в сон, отпускаем клавиатуру",
+		"sleep.resetFailed":       "не удалось переинициализировать клавиатуру перед сном:",
+		"sleep.resumed":           "пробуждение, клавиатура снова под управлением",
+		"sleep.noDeviceAfterWake": "клавиатура не вернулась после пробуждения",
 
 		"udev.needRoot": "нужны права root: sudo %s --install-udev",
 		"udev.written":  "правило записано: %s",

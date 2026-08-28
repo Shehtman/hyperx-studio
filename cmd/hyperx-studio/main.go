@@ -9,15 +9,18 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"hyperx-studio/internal/engine"
 	"hyperx-studio/internal/i18n"
+	"hyperx-studio/internal/keyboard"
 )
 
 func main() {
@@ -30,6 +33,8 @@ func main() {
 		instUdev  = flag.Bool("install-udev", false, "записать правило доступа к устройству (нужен root)")
 		printUdev = flag.Bool("print-udev", false, "вывести правило udev и выйти")
 		quit      = flag.Bool("quit", false, "остановить работающий экземпляр")
+		sleepCmd  = flag.Bool("sleep", false, "отпустить клавиатуру перед сном системы")
+		wakeCmd   = flag.Bool("wake", false, "вернуть клавиатуру после пробуждения")
 	)
 	flag.Parse()
 
@@ -44,6 +49,22 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(i18n.T(engine.Load().Lang, "app.stopped"))
+		return
+	}
+
+	if *sleepCmd {
+		if err := suspendKeyboard(*addr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *wakeCmd {
+		if err := resumeKeyboard(*addr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -146,6 +167,47 @@ func alreadyRunning(addr string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// suspendKeyboard вызывается перед сном системы.
+//
+// Работающему экземпляру достаточно сказать «отпусти»: он сам остановит
+// рендер и переинициализирует устройство. Если программа не запущена, режим
+// --apply мог оставить клавиатуру в прямом режиме — снимаем его сами,
+// иначе компьютер не проснётся от клавиатуры и мыши.
+func suspendKeyboard(addr string) error {
+	if alreadyRunning(addr) {
+		c := http.Client{Timeout: 10 * time.Second}
+		resp, err := c.Post("http://"+addr+"/api/power/sleep", "application/json", nil)
+		if err == nil {
+			resp.Body.Close()
+			return nil
+		}
+	}
+	return keyboard.ResetUSB()
+}
+
+// resumeKeyboard возвращает подсветку после пробуждения.
+func resumeKeyboard(addr string) error {
+	if alreadyRunning(addr) {
+		c := http.Client{Timeout: 15 * time.Second}
+		resp, err := c.Post("http://"+addr+"/api/power/wake", "application/json", nil)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode >= 300 {
+				body, _ := io.ReadAll(resp.Body)
+				return fmt.Errorf("%s", strings.TrimSpace(string(body)))
+			}
+			return nil
+		}
+	}
+	// Демона нет: восстанавливаем сохранённую схему так же, как --apply.
+	eng, err := engine.New()
+	if err != nil {
+		return err
+	}
+	defer eng.Close()
+	return eng.ApplyOnce()
 }
 
 // quitRunning просит работающий экземпляр завершиться.
