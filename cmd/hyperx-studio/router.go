@@ -308,20 +308,30 @@ func newRouter(eng *engine.Engine, quit chan<- struct{}, show chan<- struct{}) h
 		ping := time.NewTicker(20 * time.Second)
 		defer ping.Stop()
 
-		var lastSent time.Time
+		// Устройству кадры идут с полной частотой, а предпросмотру столько
+		// не нужно: сотня клавиш в окне стоит дороже самой отправки на
+		// клавиатуру. Глазу хватает двадцати кадров в секунду.
+		//
+		// Лишние кадры при этом откладываются, а не выбрасываются. Выброшенный
+		// кадр не беда, пока за ним идёт следующий, — но последний кадр перед
+		// остановкой рендера следующего не имеет. Так пропадало погашение:
+		// клавиатура гасла, а окно до конца сеанса показывало прежнюю картинку.
+		tick := time.NewTicker(previewInterval)
+		defer tick.Stop()
+
+		var pending []keyboard.RGB
 		for {
 			select {
 			case <-r.Context().Done():
 				return
 			case frame := <-ch:
-				// Устройству кадры идут с полной частотой, а предпросмотру
-				// столько не нужно: перерисовка сотни клавиш в SVG стоит
-				// заметно дороже самой отправки на клавиатуру, и на шестидесяти
-				// кадрах окно начинает подтормаживать. Глазу хватает двадцати.
-				if time.Since(lastSent) < previewInterval {
+				pending = frame
+			case <-tick.C:
+				if pending == nil {
 					continue
 				}
-				lastSent = time.Now()
+				frame := pending
+				pending = nil
 
 				st := eng.Status()
 				conn := 0

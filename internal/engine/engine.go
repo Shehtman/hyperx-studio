@@ -51,21 +51,23 @@ type Engine struct {
 	evIndex map[string]int
 	keyByIx map[int]layout.Key
 
-	hits      []effects.Hit
-	frame     []keyboard.RGB
-	t0        time.Time
-	paused    bool
-	asleep    bool // устройство отпущено на время сна системы
-	loopIdle  bool // цикл рендера остановлен и к устройству не обращается
-	stop      chan struct{}
-	dirty     bool // состояние изменилось, надо сохранить
-	saveAt    time.Time
-	subs      map[chan []keyboard.RGB]struct{}
-	connected bool
-	devErr    string // почему устройство не открыто
-	FPSReal   float64
-	InputOK   bool
-	InputErr  string
+	hits        []effects.Hit
+	frame       []keyboard.RGB
+	t0          time.Time
+	paused      bool
+	blackout    bool // подсветка погашена и должна такой оставаться
+	asleep      bool // устройство отпущено на время сна системы
+	loopIdle    bool // цикл рендера остановлен и к устройству не обращается
+	loopStarted bool // Run вызывали: без этого ждать простоя бессмысленно
+	stop        chan struct{}
+	dirty       bool // состояние изменилось, надо сохранить
+	saveAt      time.Time
+	subs        map[chan []keyboard.RGB]struct{}
+	connected   bool
+	devErr      string // почему устройство не открыто
+	FPSReal     float64
+	InputOK     bool
+	InputErr    string
 }
 
 // New поднимает движок. Отсутствие клавиатуры ошибкой не считается.
@@ -184,6 +186,15 @@ func (e *Engine) onKey(name string) {
 
 // Run крутит рендер до вызова Close.
 func (e *Engine) Run() {
+	e.mu.Lock()
+	e.loopStarted = true
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.loopStarted = false
+		e.mu.Unlock()
+	}()
+
 	frames, tick := 0, time.Now()
 	last := time.Now()
 	var lastProbe time.Time
@@ -208,10 +219,14 @@ func (e *Engine) Run() {
 		}
 
 		e.mu.Lock()
-		paused := e.paused || e.asleep
+		asleep := e.asleep
+		frozen := e.paused
+		dark := e.blackout
 		// Пока цикл стоит, он не трогает устройство — только в этот момент
-		// его можно безопасно закрыть перед сном системы.
-		e.loopIdle = paused
+		// его можно безопасно закрыть перед сном системы. Замирает он
+		// исключительно на время сна: пауза и погашение устройство не
+		// отпускают, см. ниже.
+		e.loopIdle = asleep
 		fps := e.st.FPS
 		if fps < 1 {
 			fps = 1
@@ -252,33 +267,28 @@ func (e *Engine) Run() {
 			}
 		}
 
-		if paused {
+		if asleep {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 
+		// Пауза и погашение не означают «перестать говорить с клавиатурой».
+		// Перестать — значит отдать её обратно прошивке: без повторной
+		// отправки прямого режима она через несколько секунд включает
+		// собственный эффект. Погашенная клавиатура так загоралась заново
+		// сама по себе, а поставленная на паузу — уезжала в заводскую
+		// радугу. Поэтому кадр продолжает уходить, просто он не меняется,
+		// а повторяется он редко: об этом позаботится holdRefresh.
 		buf := make([]keyboard.RGB, keyboard.LEDCount)
-		eff.Render(t, buf, e.ctx, false)
-		if ovl != nil {
-			tmp := make([]keyboard.RGB, keyboard.LEDCount)
-			ovl.Render(t, tmp, e.ctx, true)
-			for _, k := range e.ctx.Keys {
-				if tmp[k.Index] != (keyboard.RGB{}) {
-					buf[k.Index] = effects.Add(buf[k.Index], tmp[k.Index])
-				}
-			}
-		}
-		if mask && len(e.ctx.Selection) > 0 {
-			for _, k := range e.ctx.Keys {
-				if !e.ctx.Selection[k.Index] {
-					buf[k.Index] = keyboard.RGB{}
-				}
-			}
-		}
-		if b := e.ctx.P.Brightness; b < 0.999 {
-			for i := range buf {
-				buf[i] = effects.Scale(buf[i], b)
-			}
+		switch {
+		case dark:
+			// чёрный кадр уже собран: нули
+		case frozen:
+			e.mu.Lock()
+			copy(buf, e.frame)
+			e.mu.Unlock()
+		default:
+			buf = renderFrame(t, eff, ovl, mask, e.ctx)
 		}
 
 		// Одинаковые кадры на устройство не гоняем. Каждый кадр — девять
@@ -348,6 +358,53 @@ func (e *Engine) Run() {
 	}
 }
 
+// waitLoopIdle ждёт, пока цикл рендера остановится: только в этот момент он
+// не трогает ни устройство, ни подписчиков. Если цикл ещё не запускали,
+// ждать нечего.
+func (e *Engine) waitLoopIdle(d time.Duration) {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		e.mu.Lock()
+		done := e.loopIdle || !e.loopStarted
+		e.mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// renderFrame собирает кадр эффекта: сам эффект, слой поверх, маска
+// выделения и общая яркость.
+func renderFrame(t float64, eff, ovl effects.Effect, mask bool,
+	ctx *effects.Context) []keyboard.RGB {
+
+	buf := make([]keyboard.RGB, keyboard.LEDCount)
+	eff.Render(t, buf, ctx, false)
+	if ovl != nil {
+		tmp := make([]keyboard.RGB, keyboard.LEDCount)
+		ovl.Render(t, tmp, ctx, true)
+		for _, k := range ctx.Keys {
+			if tmp[k.Index] != (keyboard.RGB{}) {
+				buf[k.Index] = effects.Add(buf[k.Index], tmp[k.Index])
+			}
+		}
+	}
+	if mask && len(ctx.Selection) > 0 {
+		for _, k := range ctx.Keys {
+			if !ctx.Selection[k.Index] {
+				buf[k.Index] = keyboard.RGB{}
+			}
+		}
+	}
+	if b := ctx.P.Brightness; b < 0.999 {
+		for i := range buf {
+			buf[i] = effects.Scale(buf[i], b)
+		}
+	}
+	return buf
+}
+
 // holdRefresh — как часто повторять неизменившийся кадр, чтобы клавиатура
 // оставалась в прямом режиме и не включила собственный эффект.
 const holdRefresh = 400 * time.Millisecond
@@ -385,17 +442,8 @@ func (e *Engine) Sleep() {
 	e.mu.Unlock()
 	fmt.Println(i18n.T(lang, "sleep.releasing"))
 
-	// Ждём остановки цикла: закрывать устройство во время отправки кадра
-	// нельзя. Полсекунды с запасом хватает даже на 1 кадр в секунду.
-	for i := 0; i < 100; i++ {
-		e.mu.Lock()
-		idle := e.loopIdle
-		e.mu.Unlock()
-		if idle {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// Закрывать устройство во время отправки кадра нельзя.
+	e.waitLoopIdle(time.Second)
 
 	if r := e.reader; r != nil {
 		r.Stop()

@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.2.2 — 2026-09-02
+
+- Fixed: "Turn off" did not keep the keyboard off. The render loop stopped
+  talking to the device altogether, and the keyboard holds direct mode only
+  while frames keep arriving — a few seconds later the firmware took over and
+  lit it up again by itself. Pause had the same fault: instead of freezing the
+  picture it handed the keyboard back to the factory rainbow. Both now keep
+  sending, just the same frame over and over
+- The pause and blackout buttons and the frame counter are gone from the
+  window. Lighting can still be turned off from the command line with
+  hyperx-studio --off
+- Fixed: the engine tests reached for a real keyboard when one was plugged in
+  and blacked it out for the duration of the run
+
+## 1.2.1 — 2026-09-02
+
+- Fixed: "Turn off" darkened the keyboard but not the window. The render loop
+  simply stopped, so the last frame stayed on screen for the rest of the
+  session — most visibly as the glow under the keys, which kept burning under
+  a keyboard that was already dark. Blackout now sends a black frame to the
+  preview as well
+- Fixed: the frame stream dropped surplus frames instead of holding them back.
+  Losing a frame costs nothing while another one follows, but the last frame
+  before the render loop stops has no successor — which is how the blackout
+  went missing. Frames are now deferred, and the preview gets an even twenty a
+  second instead of a ragged seventeen
+- The status strip along the top is gone. A device name, a frame counter and
+  two buttons were not worth fifty pixels off the keyboard: the buttons and
+  the counter moved to the right of the tab row, the device state sits next to
+  the device picker in Setup
+- The explanatory lines under Keys and Setup are gone, and the Keypress tab
+  now hides itself when no reactive effect or overlay is on — an empty panel
+  explaining why it is empty is still an empty panel
+
 ## 1.2.0 — 2026-09-02
 
 - The interface has been laid out again. Controls moved from a narrow column

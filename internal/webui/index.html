@@ -10,15 +10,6 @@
 <body>
 <div id="app">
 
-  <header class="bar">
-    <span class="dot" id="dot" aria-hidden="true"></span>
-    <span class="mono devtext" id="devtext">&mdash;</span>
-    <span class="grow"></span>
-    <span class="mono dim" id="fps-real"></span>
-    <button class="btn" id="pause" aria-pressed="false" data-i18n="pause">Pause</button>
-    <button class="btn danger" id="blackout" data-i18n="blackout">Turn off</button>
-  </header>
-
   <main id="board">
     <div class="stage" id="stage">
       <canvas id="glow" aria-hidden="true"></canvas>
@@ -140,7 +131,6 @@
             </label>
           </div>
         </div>
-        <p class="hint" id="react-hint" data-i18n="reactHint">Pick a reactive overlay to see this.</p>
       </section>
 
       <section class="pane" id="pane-keys" role="tabpanel">
@@ -172,7 +162,6 @@
             </div>
           </div>
         </div>
-        <p class="hint" data-i18n="keysHint">Drag across the keyboard to select. Ctrl adds to the selection.</p>
       </section>
 
       <section class="pane" id="pane-presets" role="tabpanel">
@@ -199,6 +188,13 @@
           <div class="ctl wide">
             <div class="lbl"><label for="device" data-i18n="device">Device</label></div>
             <select id="device"></select>
+          </div>
+          <div class="ctl">
+            <div class="lbl"><span data-i18n="status">Status</span></div>
+            <div class="devline">
+              <span class="dot" id="dot" aria-hidden="true"></span>
+              <span class="mono" id="devtext">&mdash;</span>
+            </div>
           </div>
           <div class="ctl">
             <div class="lbl"><label for="variant" data-i18n="layout">Layout</label></div>
@@ -230,7 +226,6 @@
             <button class="btn danger" id="quit" data-i18n="quitBtn">Quit the program</button>
           </div>
         </div>
-        <p class="hint" id="about"></p>
       </section>
 
     </div>

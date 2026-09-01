@@ -243,18 +243,39 @@ func (e *Engine) SetPaused(on bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.paused = on
+	if !on {
+		// Снятие паузы возвращает и погашенную подсветку: иначе цикл
+		// продолжал бы упорно слать чёрный кадр поверх живого эффекта.
+		e.blackout = false
+	}
 }
 
-// Blackout гасит подсветку и останавливает рендер.
+// Blackout гасит подсветку.
+//
+// Цикл рендера при этом не останавливается, а переходит на чёрный кадр:
+// перестать слать кадры значило бы отдать клавиатуру обратно прошивке, и
+// через несколько секунд она включила бы собственный эффект. Тот же чёрный
+// кадр уходит в предпросмотр, иначе окно продолжало бы показывать горящую
+// клавиатуру — заметнее всего по свечению под ней.
+//
+// Гасим и напрямую: режим --apply работает без запущенного цикла.
 func (e *Engine) Blackout() error {
+	black := make([]keyboard.RGB, keyboard.LEDCount)
+
+	e.devMu.Lock()
 	e.mu.Lock()
-	e.paused = true
+	e.blackout = true
 	dev := e.dev
+	e.frame = black
 	e.mu.Unlock()
-	if dev == nil {
-		return errNoDevice
+	err := errNoDevice
+	if dev != nil {
+		err = dev.Off()
 	}
-	return dev.Off()
+	e.devMu.Unlock()
+
+	e.publish(black)
+	return err
 }
 
 // SetLang меняет язык сообщений командной строки; интерфейс переключается

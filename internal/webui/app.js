@@ -11,7 +11,6 @@ const SWATCHES = [
 // Ключи одинаковы для всех языков; проверка совпадения наборов — в тестах.
 const STRINGS = {
   en: {
-    pause: 'Pause', resume: 'Resume', blackout: 'Turn off',
     effect: 'Effect', overlay: 'Overlay', none: 'none',
     brightness: 'Brightness', speed: 'Speed', angle: 'Angle', scale: 'Scale',
     density: 'Density', length: 'Length', color: 'Colour', color2: 'Second',
@@ -31,14 +30,11 @@ const STRINGS = {
     customColourAria: 'Fill with a custom colour', keyboardAria: 'Keyboard layout',
     levelAria: 'Sound level',
     tabEffect: 'Effect', tabKeys: 'Keys', tabSetup: 'Setup',
-    selection: 'Selection', fill: 'Fill',
+    selection: 'Selection', fill: 'Fill', status: 'Status',
     reverseHint: 'The other way round',
     rainbowHint: 'A colour per key',
     maskHint: 'Darken the rest',
     autostartHint: 'Restore lighting at login',
-    reactHint: 'Keypress reaction works with a reactive effect or overlay.',
-    keysHint: 'Drag across the keyboard to select. Hold Ctrl to add to the selection.',
-    windowHint: 'Closing the window leaves the lighting on — the program keeps running in the background.',
     quit: 'Quit', quitBtn: 'Quit the program',
     device: 'Device',
     deviceAuto: 'Detect automatically',
@@ -51,7 +47,6 @@ const STRINGS = {
     disconnected: 'Keyboard disconnected. Lighting resumes as soon as it is back.',
     noInput: 'No access to input devices — keypress reaction is off.',
     noLink: 'Lost connection to the application.',
-    fpsUnit: '/s',
     fx: {
       static: 'Static', breathing: 'Breathing', spectrum: 'Spectrum cycle',
       rainbow: 'Rainbow wave', colorwave: 'Two-colour wave', gradient: 'Gradient',
@@ -69,7 +64,6 @@ const STRINGS = {
     },
   },
   ru: {
-    pause: 'Пауза', resume: 'Продолжить', blackout: 'Погасить',
     effect: 'Эффект', overlay: 'Поверх', none: 'нет',
     brightness: 'Яркость', speed: 'Скорость', angle: 'Угол', scale: 'Масштаб',
     density: 'Плотность', length: 'Длина', color: 'Цвет', color2: 'Второй',
@@ -89,14 +83,11 @@ const STRINGS = {
     customColourAria: 'Залить своим цветом', keyboardAria: 'Раскладка клавиатуры',
     levelAria: 'Уровень звука',
     tabEffect: 'Эффект', tabKeys: 'Клавиши', tabSetup: 'Настройки',
-    selection: 'Выделение', fill: 'Заливка',
+    selection: 'Выделение', fill: 'Заливка', status: 'Состояние',
     reverseHint: 'В обратную сторону',
     rainbowHint: 'Свой цвет каждой клавише',
     maskHint: 'Гасить остальные',
     autostartHint: 'Возвращать подсветку при входе',
-    reactHint: 'Реакция на нажатия работает с отзывчивым эффектом или слоем поверх.',
-    keysHint: 'Ведите мышью по клавиатуре, чтобы выделить. С Ctrl выделение добавляется.',
-    windowHint: 'Закрытое окно не гасит подсветку — программа продолжает работать в фоне.',
     quit: 'Выход', quitBtn: 'Завершить программу',
     device: 'Устройство',
     deviceAuto: 'Определять самостоятельно',
@@ -109,7 +100,6 @@ const STRINGS = {
     disconnected: 'Клавиатура отключена. Подсветка вернётся, как только устройство появится.',
     noInput: 'Нет доступа к устройствам ввода — реакция на нажатия отключена.',
     noLink: 'Связь с приложением потеряна.',
-    fpsUnit: '/с',
     fx: {
       static: 'Статика', breathing: 'Дыхание', spectrum: 'Перелив спектра',
       rainbow: 'Радужная волна', colorwave: 'Волна двух цветов', gradient: 'Градиент',
@@ -158,12 +148,9 @@ function applyLang(lang) {
   fillEffects();
   fillPresets();
   fillSources();
-  const paused = $('pause').getAttribute('aria-pressed') === 'true';
-  $('pause').textContent = paused ? t('resume') : t('pause');
   document.querySelectorAll('.sw').forEach((b) => {
     b.setAttribute('aria-label', `${t('customColour')} ${b.dataset.color}`);
   });
-  $('about').textContent = t('windowHint');
   renderNotice();
 }
 
@@ -611,9 +598,11 @@ function syncParamVisibility() {
     cell.hidden = !(p === 'brightness' || uses.has(p));
   });
 
+  // Вкладку, у которой нечего показать, прячем целиком: пустая панель с
+  // пояснением, почему она пустая, — та же пустая панель.
   const reactive = (base && base.reactive) || !!ovl;
-  $('react-hint').hidden = reactive;
-  document.querySelectorAll('#pane-react .ctl').forEach((c) => { c.hidden = !reactive; });
+  tabByName('react').hidden = !reactive;
+  if (!reactive && activeTab === 'react') showTab('fx');
 
 
   // Источник звука нужен, только когда его кто-то слушает.
@@ -916,25 +905,8 @@ function bind() {
   $('paintpick').addEventListener('input', (e) => paint(e.target.value));
   $('clearpaint').addEventListener('click', () => post('/clear-paint'));
 
-  $('pause').addEventListener('click', (e) => {
-    const on = e.target.getAttribute('aria-pressed') !== 'true';
-    e.target.setAttribute('aria-pressed', String(on));
-    e.target.classList.toggle('on', on);
-    e.target.textContent = on ? t('resume') : t('pause');
-    post('/pause', { on });
-  });
-  $('blackout').addEventListener('click', () => {
-    post('/blackout');
-    const p = $('pause');
-    p.setAttribute('aria-pressed', 'true');
-    p.classList.add('on');
-    p.textContent = t('resume');
-  });
-
   window.addEventListener('resize', layoutCanvas);
 }
-
-let lastFPS = '';
 
 let source = null;
 
@@ -958,10 +930,8 @@ function stream() {
     // Поток восстанавливается сам, а сообщение о потере связи оставалось
     // висеть до перезагрузки страницы и пугало зря.
     if (notice.link) warn('');
-    const [hex, fps, conn, level] = e.data.split('|');
+    const [hex, , conn, level] = e.data.split('|');
     queueFrame(hex, level === undefined ? undefined : Math.min(1, Number(level) || 0));
-    // Счётчик кадров меняется раз в секунду, ему очередь не нужна.
-    if (fps && fps !== lastFPS) { lastFPS = fps; $('fps-real').textContent = fps + t('fpsUnit'); }
     const online = conn === '1';
     if (online !== lastOnline) {
       lastOnline = online;
