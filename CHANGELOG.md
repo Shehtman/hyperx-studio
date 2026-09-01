@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.3 — 2026-09-02
+
+- Fixed: the glow under the keys lived a life of its own. It was drawn on a
+  second canvas blurred through CSS, and a blurred element gets its own
+  compositing layer that the browser refreshes whenever it sees fit — WebKit
+  refreshed it late, so patches of light kept burning where keys had gone dark
+  several frames earlier. Keys and glow now share one canvas and have nowhere
+  left to disagree
+- The blur is done by hand instead: the keys are drawn into a small canvas and
+  stretched back over the frame, twice at two different scales, for a tight
+  core and a wide halo. It also costs slightly less than the CSS layer did
+
 ## 1.2.2 — 2026-09-02
 
 - Fixed: "Turn off" did not keep the keyboard off. The render loop stopped

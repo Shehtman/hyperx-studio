@@ -222,9 +222,18 @@ function renderNotice() {
 // хватало, чтобы отрисовка встала совсем. Холст перерисовывается целиком
 // одним проходом и стоит браузеру одной картинки.
 //
-// Холста два. Нижний рисует те же клавиши в четверть разрешения и размыт
-// средствами браузера — это подсветка столешницы, её считает видеокарта.
-// Верхний рисует сами клавиши с подписями.
+// Свечение под клавишами тоже рисуется здесь, а не отдельным слоем.
+//
+// Сначала оно было вторым холстом поверх страницы, размытым через CSS. Так
+// делать нельзя: размытый элемент браузер выносит на отдельный слой и
+// обновляет его когда сочтёт нужным. WebKit обновлял с запозданием, и в окне
+// оставались светящиеся пятна там, где клавиши горели пару кадров назад, —
+// свечение жило своей жизнью, никак не связанной с клавиатурой.
+//
+// Теперь всё в одном холсте, и разойтись им негде. Размытие делаем сами:
+// клавиши рисуются в маленький холст, а тот растягивается обратно на весь
+// кадр. Растянутая мелкая картинка и есть размытие — вдвое, на двух разных
+// масштабах, чтобы у свечения были и плотное ядро, и широкий ореол.
 
 const KEY_EDGE = 'rgba(255,255,255,.10)';
 const KEY_SEL = '#7AA2FF';
@@ -232,11 +241,16 @@ const LABEL_LIGHT = '#C9CEDE';
 const LABEL_DARK = '#0B0D12';
 const U = 60;      // пикселей на юнит во внутренней системе координат
 const GAP = 4;
-const GLOW_DIV = 4;
+const PAD = 46;    // поле вокруг клавиатуры, куда выходит свечение
+const GLOW_DIV = 8;   // во сколько раз мельче холст плотного свечения
+const GLOW_WIDE = 3;  // и во сколько раз мельче его — холст ореола
 
-let kb = null, kbCtx = null, glow = null, glowCtx = null;
+let kb = null, kbCtx = null;
+let glowA = null, glowActx = null;  // плотное свечение
+let glowB = null, glowBctx = null;  // широкий ореол
 let boardW = 0, boardH = 0;   // размер раскладки во внутренних координатах
-let kbScale = 1, glowScale = 1;
+let viewW = 0, viewH = 0;     // она же вместе с полем под свечение
+let kbScale = 1;
 let hitBoxes = [];            // прямоугольники клавиш для попадания мышью
 const gradients = new Map();  // блик по высоте клавиши — считаем один раз
 
@@ -294,37 +308,41 @@ function capGloss(k) {
 
 function buildKeyboard() {
   kb = $('kb');
-  glow = $('glow');
   kbCtx = kb.getContext('2d');
-  glowCtx = glow.getContext('2d');
+  glowA = document.createElement('canvas');
+  glowB = document.createElement('canvas');
+  glowActx = glowA.getContext('2d');
+  glowBctx = glowB.getContext('2d');
   boardW = S.width * U;
   boardH = S.height * U;
+  viewW = boardW + PAD * 2;
+  viewH = boardH + PAD * 2;
   gradients.clear();
   prevHex = '';
   layoutCanvas();
 }
 
-// layoutCanvas подгоняет холсты под окно, сохраняя пропорции раскладки.
+// layoutCanvas подгоняет холст под окно, сохраняя пропорции раскладки.
 function layoutCanvas() {
   if (!kb) return;
   const box = $('stage').getBoundingClientRect();
   if (box.width < 2 || box.height < 2) return;
 
-  const scale = Math.min(box.width / boardW, box.height / boardH);
-  const cssW = Math.max(1, Math.floor(boardW * scale));
-  const cssH = Math.max(1, Math.floor(boardH * scale));
+  const scale = Math.min(box.width / viewW, box.height / viewH);
+  const cssW = Math.max(1, Math.floor(viewW * scale));
+  const cssH = Math.max(1, Math.floor(viewH * scale));
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
-  for (const c of [kb, glow]) {
-    c.style.width = cssW + 'px';
-    c.style.height = cssH + 'px';
-  }
+  kb.style.width = cssW + 'px';
+  kb.style.height = cssH + 'px';
   kb.width = Math.round(cssW * dpr);
   kb.height = Math.round(cssH * dpr);
-  glow.width = Math.max(1, Math.round(cssW * dpr / GLOW_DIV));
-  glow.height = Math.max(1, Math.round(cssH * dpr / GLOW_DIV));
-  kbScale = kb.width / boardW;
-  glowScale = glow.width / boardW;
+  kbScale = kb.width / viewW;
+
+  glowA.width = Math.max(1, Math.ceil(kb.width / GLOW_DIV));
+  glowA.height = Math.max(1, Math.ceil(kb.height / GLOW_DIV));
+  glowB.width = Math.max(1, Math.ceil(glowA.width / GLOW_WIDE));
+  glowB.height = Math.max(1, Math.ceil(glowA.height / GLOW_WIDE));
 
   // Градиенты живут в координатах холста и после смены масштаба уже не те.
   gradients.clear();
@@ -343,37 +361,62 @@ let prevHex = '';
 
 function drawBoard(hex) {
   if (!kbCtx) return;
-  const c = kbCtx, g = glowCtx;
+  const c = kbCtx, g = glowActx;
 
   c.setTransform(1, 0, 0, 1, 0, 0);
   c.clearRect(0, 0, kb.width, kb.height);
-  c.setTransform(kbScale, 0, 0, kbScale, 0, 0);
 
+  // Мелкий холст растягивается на весь кадр, поэтому по каждой оси у него
+  // свой масштаб: одинаковый не сошёлся бы из-за округления размеров.
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.clearRect(0, 0, glow.width, glow.height);
-  g.setTransform(glowScale, 0, 0, glowScale, 0, 0);
+  g.clearRect(0, 0, glowA.width, glowA.height);
+  g.setTransform(glowA.width / viewW, 0, 0, glowA.height / viewH, 0, 0);
+  g.translate(PAD, PAD);
 
+  const long = hex.length >= keys.length * 6;
+  const shade = new Array(keys.length);
+
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    const off = k.index * 6;
+    const rgb = long ? hex.slice(off, off + 6) : '000000';
+    const r = parseInt(rgb.slice(0, 2), 16) || 0;
+    const gg = parseInt(rgb.slice(2, 4), 16) || 0;
+    const b = parseInt(rgb.slice(4, 6), 16) || 0;
+    shade[i] = { fill: '#' + rgb, lum: r * 0.299 + gg * 0.587 + b * 0.114 };
+
+    // свечение столешницы — только цвет, без подписей и рамок
+    if (shade[i].lum > 6) {
+      keyPath(g, k);
+      g.fillStyle = shade[i].fill;
+      g.fill();
+    }
+  }
+
+  // Уменьшаем ещё втрое — это ореол пошире, — и кладём оба слоя под клавиши.
+  glowBctx.setTransform(1, 0, 0, 1, 0, 0);
+  glowBctx.clearRect(0, 0, glowB.width, glowB.height);
+  glowBctx.imageSmoothingEnabled = true;
+  glowBctx.drawImage(glowA, 0, 0, glowB.width, glowB.height);
+
+  c.imageSmoothingEnabled = true;
+  c.globalCompositeOperation = 'lighter';
+  c.globalAlpha = 0.5;
+  c.drawImage(glowB, 0, 0, kb.width, kb.height);
+  c.globalAlpha = 0.42;
+  c.drawImage(glowA, 0, 0, kb.width, kb.height);
+  c.globalAlpha = 1;
+  c.globalCompositeOperation = 'source-over';
+
+  c.setTransform(kbScale, 0, 0, kbScale, 0, 0);
+  c.translate(PAD, PAD);
   c.lineJoin = 'round';
   c.textAlign = 'center';
   c.textBaseline = 'middle';
 
-  const long = hex.length >= keys.length * 6;
-
-  for (const k of keys) {
-    const off = k.index * 6;
-    const rgb = long ? hex.slice(off, off + 6) : '000000';
-    const fill = '#' + rgb;
-    const r = parseInt(rgb.slice(0, 2), 16) || 0;
-    const gg = parseInt(rgb.slice(2, 4), 16) || 0;
-    const b = parseInt(rgb.slice(4, 6), 16) || 0;
-    const lum = r * 0.299 + gg * 0.587 + b * 0.114;
-
-    // подсветка столешницы — только цвет, без подписей и рамок
-    if (lum > 6) {
-      keyPath(g, k);
-      g.fillStyle = fill;
-      g.fill();
-    }
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    const { fill, lum } = shade[i];
 
     keyPath(c, k);
     c.fillStyle = fill;
@@ -453,8 +496,8 @@ function startWatchdog() {
 function boardPoint(evt) {
   const r = kb.getBoundingClientRect();
   return {
-    x: (evt.clientX - r.left) / r.width * boardW,
-    y: (evt.clientY - r.top) / r.height * boardH,
+    x: (evt.clientX - r.left) / r.width * viewW - PAD,
+    y: (evt.clientY - r.top) / r.height * viewH - PAD,
   };
 }
 
@@ -525,6 +568,7 @@ function drawDragBox() {
   const c = kbCtx;
   c.save();
   c.setTransform(kbScale, 0, 0, kbScale, 0, 0);
+  c.translate(PAD, PAD);
   c.fillStyle = 'rgba(122,162,255,.12)';
   c.strokeStyle = KEY_SEL;
   c.lineWidth = 2;

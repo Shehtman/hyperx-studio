@@ -268,3 +268,19 @@ func TestEveryTabHasAPane(t *testing.T) {
 		t.Fatalf("подозрительно мало вкладок: %d", found)
 	}
 }
+
+// Свечение под клавишами обязано рисоваться в тот же холст, что и клавиши.
+//
+// Отдельный слой под CSS-размытием браузер обновляет тогда, когда сочтёт
+// нужным: в WebKit свечение отставало на несколько кадров и продолжало
+// гореть там, где клавиши уже погасли.
+func TestGlowIsNotASeparateBlurredLayer(t *testing.T) {
+	html := asset(t, "index.html")
+	css := asset(t, "style.css")
+	if n := strings.Count(html, "<canvas"); n != 1 {
+		t.Errorf("холстов в разметке %d, а должен быть ровно один", n)
+	}
+	if strings.Contains(strings.ReplaceAll(css, " ", ""), "filter:blur") {
+		t.Error("в стилях снова размывается целый слой — свечение отстанет от клавиш")
+	}
+}
