@@ -14,22 +14,37 @@ jobs:
         with:
           go-version: '1.21'
 
+      # Окно интерфейса собирается на GTK и WebKit через cgo. Без
+      # заголовочных файлов о него спотыкается даже go vet: чтобы разобрать
+      # пакет, ему нужно скомпилировать вставку на C.
+      - name: Install window build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev
+
       - name: Vet
         run: go vet ./...
 
       - name: Test
         run: go test ./...
 
-      # Проверяем именно статическую сборку: пакет обещает отсутствие
-      # зависимостей, и это должно ломать сборку, а не выясняться у пользователя.
+      # Проверяем именно статическую сборку: пакет обещает, что служба
+      # подсветки не имеет зависимостей, и это должно ломать сборку, а не
+      # выясняться у пользователя. Отдельная программа окна на это обещание
+      # не влияет — служба обязана собираться и без cgo вовсе.
       - name: Build static binary
         run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o hyperx-studio ./cmd/hyperx-studio
 
       - name: Assert no dynamic dependencies
         run: |
-          if ldd hyperx-studio 2>&1 | grep -qv 'not a dynamic executable'; then
+          if LC_ALL=C ldd hyperx-studio 2>&1 | grep -qv 'not a dynamic executable'; then
             echo "бинарник получился динамическим:"; ldd hyperx-studio; exit 1
           fi
+
+      # Окно — часть пакета, значит и ломаться оно должно здесь.
+      - name: Build window
+        run: CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -o hyperx-studio-window ./cmd/hyperx-window
 
       - name: Shell scripts parse
         run: bash -n build-deb.sh

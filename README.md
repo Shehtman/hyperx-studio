@@ -8,12 +8,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.21%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-22c55e?style=flat-square)](go.mod)
-[![Binary](https://img.shields.io/badge/binary-6.3%20MB%20static-8a8a8a?style=flat-square)](#build-from-source)
+[![Binary](https://img.shields.io/badge/binary-7.4%20MB%20static-8a8a8a?style=flat-square)](#build-from-source)
 [![Platform](https://img.shields.io/badge/platform-Linux-8a8a8a?style=flat-square&logo=linux&logoColor=white)](#requirements)
 
 ### Per-key RGB control for the HyperX Alloy Origins on Linux
 
-One static binary. No OpenRGB, no daemons, no runtime.
+One static binary for the lighting, a native window for the interface.
+No OpenRGB, no daemons, no browser.
 
 </div>
 
@@ -37,13 +38,16 @@ happens to support.
 
 ### What you get
 
-- **Zero dependencies.** `ldd` reports *not a dynamic executable*. Runs on any
-  x86-64 Linux.
-- **One process.** The keyboard is opened directly over `/dev/hidraw`; there is
-  no middleman server to accidentally close.
+- **Zero dependencies.** The lighting service is statically linked — `ldd`
+  reports *not a dynamic executable*. Runs on any x86-64 Linux.
+- **No middleman.** The keyboard is opened directly over `/dev/hidraw`; there is
+  no server in between to accidentally close.
+- **A window of its own** on GTK and WebKit — not a browser in disguise. Where
+  the libraries are missing, the interface falls back to a browser and
+  everything else works unchanged.
 - **Lighting survives exit.** The device keeps the last frame as long as it has
   power.
-- **12 effects** with a live preview of the actual frame being sent.
+- **16 effects** with a live preview of the actual frame being sent.
 - **Global keypress reaction** through evdev, without grabbing the device.
 - **Two languages** — English and Russian, switchable at runtime.
 
@@ -75,7 +79,7 @@ and the interface opens in a browser instead.
 Grab the package from [Releases](https://github.com/Shehtman/hyperx-studio/releases) and install it:
 
 ```bash
-sudo apt install ./hyperx-studio_1.0.0-1_amd64.deb
+sudo apt install ./hyperx-studio_1.2.3-1_amd64.deb
 ```
 
 The package ships the binary, a desktop entry and a udev rule. **Unplug and
@@ -123,7 +127,7 @@ The last two are reactive and can be layered on top of any other effect, with
 their own speed, fade and colour.
 
 Every effect takes brightness, and most take speed, angle, scale, density,
-colours, background, saturation and direction — the sidebar shows only the ones
+colours, background, saturation and direction — the panel shows only the ones
 the current effect actually uses.
 
 ### Schemes
@@ -146,7 +150,7 @@ program works exactly as before and the sound effects simply say so.
 Capture starts when a sound effect is selected and stops when it is not — no
 microphone or output is held open in the background. By default the source is
 the monitor of the current output device; any other source can be picked in the
-sidebar.
+panel.
 
 ## Persistence
 
