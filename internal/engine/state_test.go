@@ -2,6 +2,7 @@ package engine
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"hyperx-studio/internal/effects"
@@ -97,4 +98,32 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// Настройки, которых не было в прежних версиях, приходят из старого файла
+// нулями. Ноль насыщенности и чувствительности — не то, что имел в виду
+// пользователь: интерфейс показал бы ноль, а эффект рисовал бы по-своему.
+func TestLoadFillsSettingsMissingFromOlderConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "hyperx-studio"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Файл в том виде, в каком его писала версия без этих полей.
+	old := `{"effect":"colorwave","fps":60,"lang":"ru","params":{"speed":1,"brightness":1}}`
+	if err := os.WriteFile(filepath.Join(dir, "hyperx-studio", "config.json"),
+		[]byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := Load()
+	if st.Params.Saturation != 1 {
+		t.Errorf("насыщенность %v, ожидалась 1", st.Params.Saturation)
+	}
+	if st.Params.Sensitivity != 1 {
+		t.Errorf("чувствительность %v, ожидалась 1", st.Params.Sensitivity)
+	}
+	if st.Effect != "colorwave" {
+		t.Errorf("прежние настройки потерялись: эффект %q", st.Effect)
+	}
 }

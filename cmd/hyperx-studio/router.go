@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"hyperx-studio/internal/effects"
@@ -12,9 +14,9 @@ import (
 	"hyperx-studio/internal/webui"
 )
 
-func newRouter(eng *engine.Engine, quit chan<- struct{}) http.Handler {
+func newRouter(eng *engine.Engine, quit chan<- struct{}, show chan<- struct{}) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/", http.FileServer(http.FS(webui.Files)))
+	mux.Handle("/", noCache(http.FileServer(http.FS(webui.Files))))
 
 	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, eng.Snapshot())
@@ -141,6 +143,90 @@ func newRouter(eng *engine.Engine, quit chan<- struct{}) http.Handler {
 		return eng.Blackout()
 	})
 
+	post("/api/preset/apply", func(d *json.Decoder) error {
+		var b struct {
+			ID string `json:"id"`
+		}
+		if err := d.Decode(&b); err != nil {
+			return err
+		}
+		if !eng.ApplyPreset(b.ID) {
+			return fmt.Errorf("схема %q не найдена", b.ID)
+		}
+		return nil
+	})
+
+	post("/api/preset/save", func(d *json.Decoder) error {
+		var b struct {
+			Name string `json:"name"`
+		}
+		if err := d.Decode(&b); err != nil {
+			return err
+		}
+		name := strings.TrimSpace(b.Name)
+		if name == "" {
+			return errors.New("нужно имя схемы")
+		}
+		if len(name) > 40 {
+			name = name[:40]
+		}
+		// Встроенные схемы адресуются по идентификатору: одноимённая
+		// пользовательская сделала бы обращение к ним неоднозначным.
+		for _, p := range engine.Builtin() {
+			if p.ID == name {
+				return fmt.Errorf("имя %q занято встроенной схемой", name)
+			}
+		}
+		eng.SavePreset(name)
+		return nil
+	})
+
+	post("/api/preset/delete", func(d *json.Decoder) error {
+		var b struct {
+			Name string `json:"name"`
+		}
+		if err := d.Decode(&b); err != nil {
+			return err
+		}
+		if !eng.DeletePreset(b.Name) {
+			return fmt.Errorf("схема %q не найдена", b.Name)
+		}
+		return nil
+	})
+
+	// Выбор устройства вручную. Пустой путь возвращает автоопределение.
+	post("/api/device", func(d *json.Decoder) error {
+		var b struct {
+			Path string `json:"path"`
+		}
+		if err := d.Decode(&b); err != nil {
+			return err
+		}
+		return eng.SetDevice(strings.TrimSpace(b.Path))
+	})
+
+	post("/api/audio/source", func(d *json.Decoder) error {
+		var b struct {
+			Name string `json:"name"`
+		}
+		if err := d.Decode(&b); err != nil {
+			return err
+		}
+		eng.SetAudioSource(b.Name)
+		return nil
+	})
+
+	// Список источников ходит в pactl, поэтому отдаётся отдельно, а не с
+	// каждым опросом состояния.
+	mux.HandleFunc("/api/audio/sources", func(w http.ResponseWriter, r *http.Request) {
+		src, err := engine.AudioSources()
+		if err != nil {
+			writeJSON(w, []engine.AudioSource{})
+			return
+		}
+		writeJSON(w, src)
+	})
+
 	// Вызывается хуком systemd вокруг сна системы. Клавиатуру нужно отпустить
 	// до заморозки процессов, иначе она останется в прямом режиме и компьютер
 	// не проснётся от нажатия клавиши.
@@ -151,6 +237,20 @@ func newRouter(eng *engine.Engine, quit chan<- struct{}) http.Handler {
 
 	post("/api/power/wake", func(*json.Decoder) error {
 		return eng.Wake()
+	})
+
+	// Просьба показать окно. Её шлёт второй запуск программы: интерфейс
+	// рисует работающий экземпляр, а не тот, который только что запустили.
+	mux.HandleFunc("/api/window", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "нужен POST", http.StatusMethodNotAllowed)
+			return
+		}
+		select {
+		case show <- struct{}{}:
+		default: // просьба уже в очереди — второй раз незачем
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("/api/quit", func(w http.ResponseWriter, r *http.Request) {
@@ -208,18 +308,28 @@ func newRouter(eng *engine.Engine, quit chan<- struct{}) http.Handler {
 		ping := time.NewTicker(20 * time.Second)
 		defer ping.Stop()
 
+		var lastSent time.Time
 		for {
 			select {
 			case <-r.Context().Done():
 				return
 			case frame := <-ch:
-				snap := eng.Snapshot()
+				// Устройству кадры идут с полной частотой, а предпросмотру
+				// столько не нужно: перерисовка сотни клавиш в SVG стоит
+				// заметно дороже самой отправки на клавиатуру, и на шестидесяти
+				// кадрах окно начинает подтормаживать. Глазу хватает двадцати.
+				if time.Since(lastSent) < previewInterval {
+					continue
+				}
+				lastSent = time.Now()
+
+				st := eng.Status()
 				conn := 0
-				if snap.Connected {
+				if st.Connected {
 					conn = 1
 				}
-				fmt.Fprintf(w, "data: %s|%.0f|%d\n\n",
-					keyboard.Hex(frame), snap.FPSReal, conn)
+				fmt.Fprintf(w, "data: %s|%.0f|%d|%.3f\n\n",
+					keyboard.Hex(frame), st.FPSReal, conn, st.Level)
 				flusher.Flush()
 			case <-ping.C:
 				fmt.Fprint(w, ": ping\n\n")
@@ -229,6 +339,23 @@ func newRouter(eng *engine.Engine, quit chan<- struct{}) http.Handler {
 	})
 
 	return mux
+}
+
+// previewInterval — как часто кадр уходит в интерфейс.
+const previewInterval = 50 * time.Millisecond
+
+// noCache заставляет браузер каждый раз спрашивать сервер о свежести
+// интерфейса.
+//
+// Файлы вшиты в исполняемый файл и отдаются без даты изменения, поэтому
+// браузер кэширует их на своё усмотрение. После обновления программы это
+// оборачивалось старым интерфейсом в уже открытом окне: сервер отдаёт новые
+// эффекты, а страница остаётся прежней.
+func noCache(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		h.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

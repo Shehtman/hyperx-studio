@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"hyperx-studio/internal/audio"
 	"hyperx-studio/internal/effects"
 	"hyperx-studio/internal/i18n"
 	"hyperx-studio/internal/input"
@@ -21,6 +22,27 @@ type Engine struct {
 
 	dev    *keyboard.Device
 	reader *input.Reader
+	audio  *audio.Capture
+
+	audioSrc string // источник, на котором запущен текущий захват
+	AudioErr string
+
+	// devMu держится на время передачи кадра.
+	//
+	// Устройство закрывают не только цикл рендера: его меняют из
+	// обработчика запросов и отпускают перед сном системы. Без этого замка
+	// файл может закрыться прямо посреди отправки, а его номер к тому
+	// времени уже достаться кому-то другому.
+	//
+	// Порядок замков всегда devMu → mu, иначе получится взаимная блокировка.
+	devMu sync.Mutex
+
+	// resetSend просит цикл рендера забыть последний отправленный кадр.
+	//
+	// Сам кадр живёт переменной внутри цикла: писать его туда, откуда
+	// читают обработчики запросов, значило бы делить память между
+	// потоками без нужды. Здесь достаточно флажка под общим замком.
+	resetSend bool
 
 	st      State
 	ctx     *effects.Context
@@ -40,43 +62,39 @@ type Engine struct {
 	saveAt    time.Time
 	subs      map[chan []keyboard.RGB]struct{}
 	connected bool
+	devErr    string // почему устройство не открыто
 	FPSReal   float64
 	InputOK   bool
 	InputErr  string
 }
 
+// New поднимает движок. Отсутствие клавиатуры ошибкой не считается.
+//
+// Раньше без Alloy Origins программа просто не запускалась. Это неудобно и
+// незачем: эффекты считаются независимо от устройства, их можно смотреть в
+// окне, настраивать схемы и ждать, пока клавиатуру подключат. Цикл рендера
+// сам подхватит её, как только она появится.
 func New() (*Engine, error) {
-	paths, err := keyboard.Candidates()
-	if err != nil || len(paths) == 0 {
-		return nil, fmt.Errorf(i18n.T(Load().Lang, "err.noDevice"),
-			keyboard.VendorID, keyboard.ProductID)
-	}
-	var dev *keyboard.Device
-	var lastErr error
-	for _, p := range paths {
-		dev, lastErr = keyboard.Open(p)
-		if lastErr == nil {
-			break
-		}
-	}
-	if dev == nil {
-		return nil, fmt.Errorf(i18n.T(Load().Lang, "err.noAccess"), lastErr)
-	}
-
 	e := &Engine{
-		dev:   dev,
 		st:    Load(),
 		frame: make([]keyboard.RGB, keyboard.LEDCount),
 		stop:  make(chan struct{}),
 		subs:  map[chan []keyboard.RGB]struct{}{},
 		t0:    time.Now(),
 	}
-	e.connected = true
+	if dev, err := openDevice(e.st.Device); err == nil {
+		e.dev = dev
+		e.connected = true
+	} else {
+		e.devErr = err.Error()
+	}
 	e.rebuild()
 	e.effect = effects.New(e.st.Effect)
 	if e.st.Overlay != "" {
 		e.overlay = effects.New(e.st.Overlay)
 	}
+
+	go e.syncAudio()
 
 	e.reader = &input.Reader{OnKey: e.onKey}
 	if e.reader.Start() {
@@ -167,6 +185,10 @@ func (e *Engine) onKey(name string) {
 // Run крутит рендер до вызова Close.
 func (e *Engine) Run() {
 	frames, tick := 0, time.Now()
+	last := time.Now()
+	var lastProbe time.Time
+	var sentFrame []keyboard.RGB // последний отправленный на устройство кадр
+	var lastSend time.Time
 	for {
 		select {
 		case <-e.stop:
@@ -176,13 +198,24 @@ func (e *Engine) Run() {
 		start := time.Now()
 		t := start.Sub(e.t0).Seconds()
 
+		// Шаг времени для эффектов, которые копят состояние. Ограничен
+		// сверху: после паузы, сна системы или подвисшего кадра дождь не
+		// должен прыгать через всю клавиатуру.
+		dt := start.Sub(last).Seconds()
+		last = start
+		if dt <= 0 || dt > 0.25 {
+			dt = 0.25
+		}
+
 		e.mu.Lock()
 		paused := e.paused || e.asleep
 		// Пока цикл стоит, он не трогает устройство — только в этот момент
 		// его можно безопасно закрыть перед сном системы.
 		e.loopIdle = paused
-		dev := e.dev
 		fps := e.st.FPS
+		if fps < 1 {
+			fps = 1
+		}
 		eff, ovl := e.effect, e.overlay
 		// хиты живут не дольше времени затухания
 		keep := e.st.Params.ReactFade + 0.5
@@ -195,6 +228,8 @@ func (e *Engine) Run() {
 		e.hits = alive
 		e.ctx.Hits = append([]effects.Hit(nil), e.hits...)
 		e.ctx.P = e.st.Params
+		e.ctx.Dt = dt
+		e.ctx.Sound = e.sound()
 		mask := e.st.MaskSel
 		needSave := e.dirty && !e.saveAt.IsZero() && time.Now().After(e.saveAt)
 		if needSave {
@@ -202,7 +237,14 @@ func (e *Engine) Run() {
 			e.saveAt = time.Time{}
 		}
 		stCopy := e.st
+		resend := e.resetSend
+		e.resetSend = false
 		e.mu.Unlock()
+
+		if resend {
+			sentFrame = sentFrame[:0]
+			lastSend = time.Time{}
+		}
 
 		if needSave {
 			if err := Save(stCopy); err != nil {
@@ -239,20 +281,49 @@ func (e *Engine) Run() {
 			}
 		}
 
+		// Одинаковые кадры на устройство не гоняем. Каждый кадр — девять
+		// управляющих пакетов, а это медленный канал: на статике и на
+		// спокойных эффектах повторять их незачем. Изредка кадр всё же
+		// повторяем, иначе клавиатура вернётся к своему эффекту.
 		showErr := errNoDevice
+		e.devMu.Lock()
+		e.mu.Lock()
+		dev := e.dev
+		e.mu.Unlock()
 		if dev != nil {
-			showErr = dev.Show(buf)
+			if sameFrame(buf, sentFrame) && time.Since(lastSend) < holdRefresh {
+				showErr = nil
+			} else {
+				showErr = dev.Show(buf)
+				if showErr == nil {
+					sentFrame = append(sentFrame[:0], buf...)
+					lastSend = time.Now()
+				}
+			}
 		}
+		e.devMu.Unlock()
 		if showErr != nil {
-			// после переподключения клавиатуры прежний hidraw мёртв,
-			// а номер узла меняется — ищем устройство заново
-			if !e.reopen() {
+			// После переподключения клавиатуры прежний hidraw мёртв, а
+			// номер узла меняется — ищем устройство заново. Пробуем не
+			// чаще раза в секунду: перебор ходит в sysfs, и без
+			// клавиатуры это повторялось бы каждый кадр.
+			ok := false
+			if time.Since(lastProbe) >= time.Second {
+				lastProbe = time.Now()
+				ok = e.reopen()
+			}
+			if !ok {
 				e.setDisconnected(showErr)
 				e.mu.Lock()
 				e.frame = buf
 				e.mu.Unlock()
 				e.publish(buf)
-				time.Sleep(time.Second)
+				// Кадры продолжают идти в окно с обычной частотой:
+				// без устройства программа остаётся живым
+				// предпросмотром, а не застывшей картинкой.
+				if d := time.Second/time.Duration(fps) - time.Since(start); d > 0 {
+					time.Sleep(d)
+				}
 				continue
 			}
 		}
@@ -271,13 +342,27 @@ func (e *Engine) Run() {
 			frames, tick = 0, now
 		}
 
-		if fps < 1 {
-			fps = 1
-		}
 		if d := time.Second/time.Duration(fps) - time.Since(start); d > 0 {
 			time.Sleep(d)
 		}
 	}
+}
+
+// holdRefresh — как часто повторять неизменившийся кадр, чтобы клавиатура
+// оставалась в прямом режиме и не включила собственный эффект.
+const holdRefresh = 400 * time.Millisecond
+
+// sameFrame сравнивает кадры поэлементно.
+func sameFrame(a, b []keyboard.RGB) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // errNoDevice — устройство сейчас не открыто. Отдельная ошибка нужна, чтобы
@@ -315,6 +400,10 @@ func (e *Engine) Sleep() {
 	if r := e.reader; r != nil {
 		r.Stop()
 	}
+	// Утилиту записи тоже отпускаем: во сне она не нужна, а при
+	// пробуждении звуковой сервер может подняться с другими узлами.
+	e.stopAudio()
+	e.devMu.Lock()
 	e.mu.Lock()
 	dev := e.dev
 	e.dev = nil
@@ -323,6 +412,7 @@ func (e *Engine) Sleep() {
 	if dev != nil {
 		dev.Close()
 	}
+	e.devMu.Unlock()
 
 	// Закрыть узел мало: прямой режим живёт в прошивке, а не в дескрипторе.
 	// Снимаем его переинициализацией устройства.
@@ -354,6 +444,7 @@ func (e *Engine) Wake() error {
 
 	reader := &input.Reader{OnKey: e.onKey}
 	started := reader.Start()
+	go e.syncAudio()
 
 	e.mu.Lock()
 	e.reader = reader
@@ -373,26 +464,55 @@ func (e *Engine) Wake() error {
 
 // reopen пытается заново открыть устройство: номер узла hidraw после
 // переподключения другой, поэтому ищем по идентификаторам, а не по пути.
-func (e *Engine) reopen() bool {
+// openDevice открывает узел hidraw. Пустой pref означает поиск нашей
+// клавиатуры по идентификаторам; иначе берём ровно то, что выбрал человек.
+func openDevice(pref string) (*keyboard.Device, error) {
+	if pref != "" {
+		return keyboard.Open(pref)
+	}
 	paths, err := keyboard.Candidates()
 	if err != nil || len(paths) == 0 {
-		return false
+		return nil, fmt.Errorf(i18n.T(Load().Lang, "err.noDevice"),
+			keyboard.VendorID, keyboard.ProductID)
 	}
+	var lastErr error
 	for _, p := range paths {
 		dev, err := keyboard.Open(p)
-		if err != nil {
-			continue
+		if err == nil {
+			return dev, nil
 		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf(i18n.T(Load().Lang, "err.noAccess"), lastErr)
+}
+
+func (e *Engine) reopen() bool {
+	e.mu.Lock()
+	pref := e.st.Device
+	e.mu.Unlock()
+
+	e.devMu.Lock()
+	defer e.devMu.Unlock()
+
+	dev, err := openDevice(pref)
+	if err != nil {
+		e.mu.Lock()
+		e.devErr = err.Error()
+		e.mu.Unlock()
+		return false
+	}
+	{
 		e.mu.Lock()
 		old := e.dev
 		e.dev = dev
+		e.devErr = ""
+		e.resetSend = true // на новом узле кадр надо послать заново
 		e.mu.Unlock()
 		if old != nil {
 			old.Close()
 		}
 		return true
 	}
-	return false
 }
 
 func (e *Engine) setDisconnected(err error) {
@@ -441,8 +561,15 @@ func (e *Engine) Close() {
 	if dirty {
 		Save(st)
 	}
+	e.stopAudio()
 	// подсветку намеренно не гасим: пусть остаётся последний кадр
-	if e.dev != nil {
-		e.dev.Close()
+	e.devMu.Lock()
+	e.mu.Lock()
+	dev := e.dev
+	e.dev = nil
+	e.mu.Unlock()
+	if dev != nil {
+		dev.Close()
 	}
+	e.devMu.Unlock()
 }

@@ -37,6 +37,17 @@ type Params struct {
 	ReactSpeed float64 `json:"reactSpeed"`
 	ReactFade  float64 `json:"reactFade"`
 	Rainbow    bool    `json:"rainbow"`
+
+	// Background — чем залита клавиатура там, где эффект ничего не рисует.
+	// Раньше это всегда была чернота.
+	Background RGB `json:"background"`
+	// Reverse разворачивает ход волн и змейки.
+	Reverse bool `json:"reverse"`
+	// Saturation приглушает цвет радужных эффектов: на единице это чистый
+	// спектр, ближе к нулю — пастель.
+	Saturation float64 `json:"saturation"`
+	// Sensitivity — усиление звука для звуковых эффектов.
+	Sensitivity float64 `json:"sensitivity"`
 }
 
 func DefaultParams() Params {
@@ -44,7 +55,7 @@ func DefaultParams() Params {
 		Speed: 1, Brightness: 1, Angle: 0, Scale: 1, Density: 0.5, Length: 12,
 		Color1: RGB{R: 255, G: 40}, Color2: RGB{G: 60, B: 255},
 		ReactColor: RGB{G: 200, B: 255}, ReactSpeed: 1, ReactFade: 1.6,
-		Rainbow: true,
+		Rainbow: true, Saturation: 1, Sensitivity: 1,
 	}
 }
 
@@ -56,6 +67,15 @@ type Context struct {
 	P         Params
 	PerKey    map[int]RGB
 	Selection map[int]bool
+
+	// Sound — что сейчас играет. Заполняется движком, когда включён
+	// звуковой эффект.
+	Sound Sound
+
+	// Dt — сколько секунд прошло с прошлого кадра. Эффекты, которые
+	// накапливают состояние (дождь, мерцание), обязаны считать через него,
+	// иначе их темп зависит от частоты кадров.
+	Dt float64
 
 	snakeOrder []int
 }
@@ -126,10 +146,29 @@ func Add(a, b RGB) RGB {
 	}
 }
 
+// clear заливает клавиатуру фоном. Для эффектов, которые рисуют отдельные
+// точки — дождь, звёзды, змейка — это то, что видно между ними.
 func clear(buf []RGB, ctx *Context) {
 	for _, k := range ctx.Keys {
-		buf[k.Index] = RGB{}
+		buf[k.Index] = ctx.P.Background
 	}
+}
+
+// dir учитывает разворот направления.
+func dir(ctx *Context) float64 {
+	if ctx.P.Reverse {
+		return -1
+	}
+	return 1
+}
+
+// sat отдаёт насыщенность радужных эффектов, не давая ей уехать в ноль
+// на старых настройках, где параметра ещё не было.
+func sat(ctx *Context) float64 {
+	if ctx.P.Saturation <= 0 {
+		return 1
+	}
+	return math.Min(1, ctx.P.Saturation)
 }
 
 // ── эффекты ───────────────────────────────────────────────────────────
@@ -177,11 +216,19 @@ func (e *Breathing) Render(t float64, buf []RGB, ctx *Context, _ bool) {
 type SpectrumCycle struct{ base }
 
 func (e *SpectrumCycle) Render(t float64, buf []RGB, ctx *Context, _ bool) {
-	c := HSV(t*ctx.P.Speed*0.15, 1, 1)
+	c := HSV(t*ctx.P.Speed*0.15, sat(ctx), 1)
 	for _, k := range ctx.Keys {
 		buf[k.Index] = c
 	}
 }
+
+// waveTravel — за какую долю ширины клавиатуры волна смещается за секунду
+// при скорости 1x.
+//
+// Раньше время делилось на масштаб: чем больше полос, тем медленнее ползла
+// картинка, и на пяти полосах волна трогалась с места только к 4x. Масштаб
+// задаёт число полос, скорость — их ход, и смешивать их нельзя.
+const waveTravel = 0.25
 
 type RainbowWave struct{ base }
 
@@ -190,7 +237,7 @@ func (e *RainbowWave) Render(t float64, buf []RGB, ctx *Context, _ bool) {
 	dx, dy := math.Cos(a), math.Sin(a)
 	for _, k := range ctx.Keys {
 		proj := (k.CX()*dx + k.CY()*dy) / math.Max(ctx.W, 1)
-		buf[k.Index] = HSV(proj*ctx.P.Scale-t*ctx.P.Speed*0.2, 1, 1)
+		buf[k.Index] = HSV((proj-t*ctx.P.Speed*waveTravel*dir(ctx))*ctx.P.Scale, sat(ctx), 1)
 	}
 }
 
@@ -201,7 +248,8 @@ func (e *ColorWave) Render(t float64, buf []RGB, ctx *Context, _ bool) {
 	dx, dy := math.Cos(a), math.Sin(a)
 	for _, k := range ctx.Keys {
 		proj := (k.CX()*dx + k.CY()*dy) / math.Max(ctx.W, 1)
-		f := (math.Sin((proj*ctx.P.Scale-t*ctx.P.Speed*0.2)*2*math.Pi) + 1) / 2
+		phase := (proj - t*ctx.P.Speed*waveTravel*dir(ctx)) * ctx.P.Scale
+		f := (math.Sin(phase*2*math.Pi) + 1) / 2
 		buf[k.Index] = Mix(ctx.P.Color1, ctx.P.Color2, f)
 	}
 }
@@ -236,7 +284,9 @@ func (e *Twinkle) Render(t float64, buf []RGB, ctx *Context, _ bool) {
 	if e.stars == nil {
 		e.stars = map[int]float64{}
 	}
-	if rand.Float64() < ctx.P.Density*0.5 && len(ctx.Keys) > 0 {
+	// Вероятность считаем от прошедшего времени, а не от кадра: иначе на
+	// 30 кадрах звёзд вдвое меньше, чем на 60, при тех же настройках.
+	if rand.Float64() < ctx.P.Density*starsPerSecond*ctx.Dt && len(ctx.Keys) > 0 {
 		k := ctx.Keys[rand.Intn(len(ctx.Keys))]
 		if _, ok := e.stars[k.Index]; !ok {
 			e.stars[k.Index] = t
@@ -254,19 +304,27 @@ func (e *Twinkle) Render(t float64, buf []RGB, ctx *Context, _ bool) {
 	}
 }
 
+// starsPerSecond и dropsPerSecond — сколько объектов рождается в секунду при
+// плотности 1.
+const (
+	starsPerSecond = 26
+	dropsPerSecond = 14
+	dropFallSpeed  = 5.5 // рядов клавиатуры в секунду при скорости 1x
+)
+
 type Rain struct {
 	base
 	drops [][2]float64
 }
 
 func (e *Rain) Render(t float64, buf []RGB, ctx *Context, _ bool) {
-	if rand.Float64() < ctx.P.Density*0.4 {
+	if rand.Float64() < ctx.P.Density*dropsPerSecond*ctx.Dt {
 		e.drops = append(e.drops, [2]float64{rand.Float64() * ctx.W, -1})
 	}
 	clear(buf, ctx)
 	alive := e.drops[:0]
 	for _, d := range e.drops {
-		d[1] += ctx.P.Speed * 0.12
+		d[1] += ctx.P.Speed * dropFallSpeed * ctx.Dt
 		if d[1] > ctx.H+2 {
 			continue
 		}
@@ -342,7 +400,7 @@ func (e *Snake) Render(t float64, buf []RGB, ctx *Context, _ bool) {
 	if tail < 1 {
 		tail = 1
 	}
-	head := math.Mod(t*ctx.P.Speed*18, float64(n))
+	head := math.Mod(t*ctx.P.Speed*18*dir(ctx), float64(n))
 	for j := 0; j < tail; j++ {
 		pos := (int(head)-j)%n + n
 		k := ctx.Keys[ctx.snakeOrder[pos%n]]
@@ -416,26 +474,83 @@ func New(id string) Effect {
 	return &Static{base{"static", "Статика", false}}
 }
 
+// NeedsAudio сообщает, нужен ли эффекту захват звука.
+func NeedsAudio(id string) bool {
+	for _, d := range All {
+		if d.ID == id {
+			return d.Audio
+		}
+	}
+	return false
+}
+
 // Descriptor описывает эффект для интерфейса.
 type Descriptor struct {
-	ID       string        `json:"id"`
-	Name     string        `json:"name"`
-	Reactive bool          `json:"reactive"`
-	Uses     []string      `json:"uses"`
-	Make     func() Effect `json:"-"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Reactive bool   `json:"reactive"`
+	// Audio поднят у эффектов, которым нужен звук: интерфейс по нему
+	// показывает выбор источника, а движок включает захват.
+	Audio bool          `json:"audio"`
+	Uses  []string      `json:"uses"`
+	Make  func() Effect `json:"-"`
+}
+
+// mk собирает эффект вместе с его описанием, чтобы имя и признаки не
+// разъезжались между списком и самим объектом.
+func mk(id, name string, reactive, audio bool, uses []string, make func(base) Effect) Descriptor {
+	b := base{id, name, reactive}
+	return Descriptor{ID: id, Name: name, Reactive: reactive, Audio: audio,
+		Uses: uses, Make: func() Effect { return make(b) }}
 }
 
 var All = []Descriptor{
-	{"static", "Статика", false, []string{"color1"}, func() Effect { return &Static{base{"static", "Статика", false}} }},
-	{"breathing", "Дыхание", false, []string{"speed", "color1"}, func() Effect { return &Breathing{base{"breathing", "Дыхание", false}} }},
-	{"spectrum", "Перелив спектра", false, []string{"speed"}, func() Effect { return &SpectrumCycle{base{"spectrum", "Перелив спектра", false}} }},
-	{"rainbow", "Радужная волна", false, []string{"speed", "angle", "scale"}, func() Effect { return &RainbowWave{base{"rainbow", "Радужная волна", false}} }},
-	{"colorwave", "Волна двух цветов", false, []string{"speed", "color1", "color2", "angle", "scale"}, func() Effect { return &ColorWave{base{"colorwave", "Волна двух цветов", false}} }},
-	{"gradient", "Градиент", false, []string{"color1", "color2", "angle"}, func() Effect { return &Gradient{base{"gradient", "Градиент", false}} }},
-	{"twinkle", "Звёзды", false, []string{"speed", "color1", "density"}, func() Effect { return &Twinkle{base: base{"twinkle", "Звёзды", false}} }},
-	{"rain", "Дождь", false, []string{"speed", "color1", "density"}, func() Effect { return &Rain{base: base{"rain", "Дождь", false}} }},
-	{"fire", "Огонь", false, []string{"speed"}, func() Effect { return &Fire{base{"fire", "Огонь", false}} }},
-	{"snake", "Змейка", false, []string{"speed", "color1", "length"}, func() Effect { return &Snake{base{"snake", "Змейка", false}} }},
-	{"ripple", "Волны от нажатий", true, nil, func() Effect { return &Ripple{base{"ripple", "Волны от нажатий", true}} }},
-	{"flash", "Вспышка по нажатию", true, nil, func() Effect { return &ReactiveFlash{base{"flash", "Вспышка по нажатию", true}} }},
+	mk("static", "Статика", false, false,
+		[]string{"color1"},
+		func(b base) Effect { return &Static{b} }),
+	mk("breathing", "Дыхание", false, false,
+		[]string{"speed", "color1"},
+		func(b base) Effect { return &Breathing{b} }),
+	mk("spectrum", "Перелив спектра", false, false,
+		[]string{"speed", "saturation"},
+		func(b base) Effect { return &SpectrumCycle{b} }),
+	mk("rainbow", "Радужная волна", false, false,
+		[]string{"speed", "angle", "scale", "saturation", "reverse"},
+		func(b base) Effect { return &RainbowWave{b} }),
+	mk("colorwave", "Волна двух цветов", false, false,
+		[]string{"speed", "color1", "color2", "angle", "scale", "reverse"},
+		func(b base) Effect { return &ColorWave{b} }),
+	mk("gradient", "Градиент", false, false,
+		[]string{"color1", "color2", "angle"},
+		func(b base) Effect { return &Gradient{b} }),
+	mk("twinkle", "Звёзды", false, false,
+		[]string{"speed", "color1", "density", "background"},
+		func(b base) Effect { return &Twinkle{base: b} }),
+	mk("rain", "Дождь", false, false,
+		[]string{"speed", "color1", "density", "background"},
+		func(b base) Effect { return &Rain{base: b} }),
+	mk("fire", "Огонь", false, false,
+		[]string{"speed"},
+		func(b base) Effect { return &Fire{b} }),
+	mk("snake", "Змейка", false, false,
+		[]string{"speed", "color1", "length", "background", "reverse"},
+		func(b base) Effect { return &Snake{b} }),
+	mk("audiobars", "Эквалайзер", false, true,
+		[]string{"color1", "color2", "sensitivity", "background", "reverse"},
+		func(b base) Effect { return &AudioBars{b} }),
+	mk("audiospectrum", "Спектр звука", false, true,
+		[]string{"sensitivity", "saturation", "reverse"},
+		func(b base) Effect { return &AudioSpectrum{b} }),
+	mk("audiopulse", "Пульс звука", false, true,
+		[]string{"color1", "color2", "sensitivity"},
+		func(b base) Effect { return &AudioPulse{b} }),
+	mk("audiowave", "Волна под музыку", false, true,
+		[]string{"speed", "color1", "color2", "angle", "scale", "sensitivity", "reverse"},
+		func(b base) Effect { return &AudioWave{base: b} }),
+	mk("ripple", "Волны от нажатий", true, false,
+		nil,
+		func(b base) Effect { return &Ripple{b} }),
+	mk("flash", "Вспышка по нажатию", true, false,
+		nil,
+		func(b base) Effect { return &ReactiveFlash{b} }),
 }

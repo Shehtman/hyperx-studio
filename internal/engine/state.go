@@ -22,6 +22,14 @@ type State struct {
 	Selection []int             `json:"selection"`
 	Autostart bool              `json:"autostart"`
 	Lang      string            `json:"lang"`
+	// AudioSource — что слушают звуковые эффекты. Пусто означает монитор
+	// текущего устройства вывода, то есть всё, что слышно из колонок.
+	AudioSource string `json:"audioSource"`
+	// Presets — схемы, сохранённые пользователем.
+	Presets []Preset `json:"presets"`
+	// Device — узел hidraw, выбранный вручную. Пусто означает «искать
+	// Alloy Origins самостоятельно».
+	Device string `json:"device"`
 }
 
 func DefaultState() State {
@@ -62,6 +70,16 @@ func Load() State {
 	}
 	if !i18n.Valid(st.Lang) {
 		st.Lang = i18n.EN
+	}
+	// Настройки, появившиеся позже, в старом файле отсутствуют и приходят
+	// нулями. Ноль здесь означал бы «без цвета» и «без звука», поэтому
+	// подставляем разумные значения — иначе ползунки в интерфейсе покажут
+	// не то, что рисует эффект.
+	if st.Params.Saturation <= 0 {
+		st.Params.Saturation = 1
+	}
+	if st.Params.Sensitivity <= 0 {
+		st.Params.Sensitivity = 1
 	}
 	return st
 }

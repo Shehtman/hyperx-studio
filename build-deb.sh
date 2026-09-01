@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Сборка .deb. Один пакет, ни одной зависимости: бинарник статический.
+# Сборка .deb.
+#
+# В пакете две программы. hyperx-studio — сама служба подсветки: статическая,
+# без единой зависимости. hyperx-studio-window — окно интерфейса на GTK и
+# WebKit; без него программа тоже работает, просто интерфейс покажет браузер.
 #
 #   DEBFULLNAME="Имя" DEBEMAIL="you@example.com" ./build-deb.sh
 
@@ -21,15 +25,32 @@ rm -rf "$BUILD"; mkdir -p "$BUILD" "$OUT"
 PKG="$BUILD/hyperx-studio"
 mkdir -p "$PKG/DEBIAN" "$PKG/usr/bin" "$PKG/usr/share/applications" \
          "$PKG/usr/lib/udev/rules.d" "$PKG/usr/share/doc/hyperx-studio" \
-         "$PKG/usr/lib/systemd/system-sleep"
+         "$PKG/usr/lib/systemd/system-sleep" \
+         "$PKG/usr/share/icons/hicolor/scalable/apps"
 
-say "Собираю статический бинарник"
+say "Собираю службу (статически, без зависимостей)"
 CGO_ENABLED=0 go build -trimpath \
     -ldflags "-s -w -X main.version=$VER" \
     -o "$PKG/usr/bin/hyperx-studio" ./cmd/hyperx-studio
 
+# Окно собирается отдельно: GTK и WebKit нужны только ему. Если заголовочных
+# файлов нет, пакет всё равно соберётся — интерфейс покажет браузер.
+if pkg-config --exists gtk+-3.0 webkit2gtk-4.1 2>/dev/null; then
+    say "Собираю окно (GTK + WebKit)"
+    CGO_ENABLED=1 go build -trimpath \
+        -ldflags "-s -w" \
+        -o "$PKG/usr/bin/hyperx-studio-window" ./cmd/hyperx-window
+    WINDOW_BUILT=1
+else
+    say "GTK и WebKit не найдены — собираю без своего окна"
+    echo "  поставьте libgtk-3-dev и libwebkit2gtk-4.1-dev, чтобы окно было своим"
+    WINDOW_BUILT=0
+fi
+
 # правило доступа берём из самой программы, чтобы оно не разъехалось с кодом
 "$PKG/usr/bin/hyperx-studio" --print-udev > "$PKG/usr/lib/udev/rules.d/60-hyperx-studio.rules"
+
+cp assets/hyperx-studio.svg "$PKG/usr/share/icons/hicolor/scalable/apps/hyperx-studio.svg"
 
 cat > "$PKG/usr/share/applications/hyperx-studio.desktop" <<'DESKTOP'
 [Desktop Entry]
@@ -37,7 +58,7 @@ Type=Application
 Name=HyperX Studio
 Comment=Подсветка клавиатуры HyperX Alloy Origins
 Exec=/usr/bin/hyperx-studio
-Icon=input-keyboard
+Icon=hyperx-studio
 Terminal=false
 Categories=Utility;Settings;HardwareSettings;
 StartupWMClass=hyperx-studio
@@ -114,6 +135,8 @@ Section: utils
 Priority: optional
 Architecture: $ARCH
 Installed-Size: $INSTALLED_KB
+Recommends: libgtk-3-0t64 | libgtk-3-0, libwebkit2gtk-4.1-0
+Suggests: pulseaudio-utils | pipewire-bin
 Maintainer: $MAINTAINER
 Homepage: $HOMEPAGE
 Description: Подсветка клавиатуры HyperX Alloy Origins
@@ -121,9 +144,12 @@ Description: Подсветка клавиатуры HyperX Alloy Origins
  напрямую через hidraw, сама считает эффекты и сама отдаёт веб-интерфейс,
  вшитый в исполняемый файл.
  .
- Ни OpenRGB, ни каких-либо служб или библиотек не требуется: бинарник
- статический и не имеет зависимостей. Схема остаётся на клавиатуре после
+ Ни OpenRGB, ни каких-либо служб не требуется: сама служба подсветки —
+ статический бинарник без зависимостей. Схема остаётся на клавиатуре после
  выхода из программы.
+ .
+ Окно интерфейса рисует отдельная программа на GTK и WebKit. Без неё всё
+ работает по-прежнему, только интерфейс открывается в браузере.
  .
  Реакция на нажатия читается через evdev без захвата устройства, поэтому
  обычный ввод не затрагивается.
@@ -140,7 +166,28 @@ if [ "$1" = "configure" ]; then
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database -q /usr/share/applications || true
     fi
-    echo "HyperX Studio установлена. Переподключите клавиатуру, чтобы права применились."
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -qtf /usr/share/icons/hicolor || true
+    fi
+
+    # Перезапускаем работающий экземпляр. Без этого в памяти остаётся прежняя
+    # версия: файл на диске уже новый, но программа продолжает работать
+    # старая, а повторный запуск лишь показывает окно работающей — новые
+    # эффекты и настройки не появятся до перезагрузки.
+    user=$(ps -o user= -C hyperx-studio 2>/dev/null | head -n1 | tr -d ' ')
+    if [ -n "$user" ] && [ "$user" != root ] && command -v runuser >/dev/null 2>&1; then
+        uid=$(id -u "$user" 2>/dev/null || echo "")
+        /usr/bin/hyperx-studio --quit >/dev/null 2>&1 || true
+        sleep 1
+        if [ -n "$uid" ]; then
+            runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+                setsid /usr/bin/hyperx-studio --no-window \
+                >/dev/null 2>&1 </dev/null &
+        fi
+        echo "HyperX Studio обновлена и перезапущена. Откройте окно заново из меню."
+    else
+        echo "HyperX Studio установлена. Переподключите клавиатуру, чтобы права применились."
+    fi
 fi
 exit 0
 POSTINST
@@ -155,6 +202,9 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database -q /usr/share/applications || true
     fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -qtf /usr/share/icons/hicolor || true
+    fi
 fi
 exit 0
 POSTRM
@@ -164,6 +214,7 @@ find "$PKG" -type f -not -path '*/DEBIAN/*' -exec chmod 644 {} +
 # Хук сна обязан быть исполняемым: systemd молча пропускает файлы без +x.
 chmod 755 "$PKG/usr/bin/hyperx-studio" "$PKG/DEBIAN/postinst" "$PKG/DEBIAN/postrm" \
           "$PKG/usr/lib/systemd/system-sleep/hyperx-studio"
+if [ "$WINDOW_BUILT" = 1 ]; then chmod 755 "$PKG/usr/bin/hyperx-studio-window"; fi
 
 say "Упаковываю"
 fakeroot dpkg-deb --build --root-owner-group "$PKG" "$OUT" >/dev/null

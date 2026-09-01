@@ -25,16 +25,17 @@ import (
 
 func main() {
 	var (
-		addr      = flag.String("addr", "127.0.0.1:7423", "адрес интерфейса")
-		noWindow  = flag.Bool("no-window", false, "не открывать браузер")
-		applyOnly = flag.Bool("apply", false, "применить сохранённую схему и выйти")
-		off       = flag.Bool("off", false, "погасить подсветку и выйти")
-		showVer   = flag.Bool("version", false, "показать версию")
-		instUdev  = flag.Bool("install-udev", false, "записать правило доступа к устройству (нужен root)")
-		printUdev = flag.Bool("print-udev", false, "вывести правило udev и выйти")
-		quit      = flag.Bool("quit", false, "остановить работающий экземпляр")
-		sleepCmd  = flag.Bool("sleep", false, "отпустить клавиатуру перед сном системы")
-		wakeCmd   = flag.Bool("wake", false, "вернуть клавиатуру после пробуждения")
+		addr       = flag.String("addr", "127.0.0.1:7423", "адрес интерфейса")
+		noWindow   = flag.Bool("no-window", false, "не открывать окно")
+		useBrowser = flag.Bool("browser", false, "показать интерфейс в браузере, а не своим окном")
+		applyOnly  = flag.Bool("apply", false, "применить сохранённую схему и выйти")
+		off        = flag.Bool("off", false, "погасить подсветку и выйти")
+		showVer    = flag.Bool("version", false, "показать версию")
+		instUdev   = flag.Bool("install-udev", false, "записать правило доступа к устройству (нужен root)")
+		printUdev  = flag.Bool("print-udev", false, "вывести правило udev и выйти")
+		quit       = flag.Bool("quit", false, "остановить работающий экземпляр")
+		sleepCmd   = flag.Bool("sleep", false, "отпустить клавиатуру перед сном системы")
+		wakeCmd    = flag.Bool("wake", false, "вернуть клавиатуру после пробуждения")
 	)
 	flag.Parse()
 
@@ -86,9 +87,15 @@ func main() {
 	eng, err := engine.New()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.T(lang, "err.prefix"), err)
+		os.Exit(1)
+	}
+	// Клавиатуры может не быть — это не повод не запускаться. Программа
+	// работает предпросмотром и подхватит устройство, как только оно
+	// появится; в окне об этом сказано отдельной строкой.
+	if eng.DevicePath() == "" {
+		fmt.Fprintln(os.Stderr, i18n.T(lang, "err.prefix"), eng.DeviceError())
 		fmt.Fprintln(os.Stderr, i18n.T(lang, "err.permsHint"))
 		fmt.Fprintln(os.Stderr, i18n.T(lang, "err.installUdev"))
-		os.Exit(1)
 	}
 
 	switch {
@@ -116,8 +123,11 @@ func main() {
 		if alreadyRunning(*addr) {
 			fmt.Println(i18n.T(lang, "app.alreadyOpen"))
 			eng.Close()
-			if !*noWindow {
-				openWindow("http://" + *addr)
+			// Окно рисует работающий экземпляр — второму остаётся его
+			// попросить. Раньше здесь открывалось второе окно поверх
+			// первого, и закрытие любого из них ничего не значило.
+			if !*noWindow && !showRunningWindow(*addr) {
+				openBrowserWindow("http://" + *addr)
 			}
 			return
 		}
@@ -127,7 +137,8 @@ func main() {
 	}
 
 	quitCh := make(chan struct{}, 1)
-	srv := &http.Server{Handler: newRouter(eng, quitCh)}
+	showWin := make(chan struct{}, 1)
+	srv := &http.Server{Handler: newRouter(eng, quitCh, showWin)}
 	url := "http://" + ln.Addr().String()
 	fmt.Println(i18n.T(lang, "app.url", url))
 	fmt.Println(i18n.T(lang, "app.device", eng.DevicePath()))
@@ -138,9 +149,18 @@ func main() {
 		}
 	}()
 
+	win := &window{url: url, lang: lang, browser: *useBrowser}
 	if !*noWindow {
-		openWindow(url)
+		win.show()
 	}
+	// Повторный запуск программы не поднимает второй экземпляр, а просит
+	// этот показать окно.
+	go func() {
+		for range showWin {
+			win.show()
+		}
+	}()
+
 	fmt.Println(i18n.T(lang, "app.windowHint"))
 	fmt.Println(i18n.T(lang, "app.quitHint"))
 
@@ -150,12 +170,24 @@ func main() {
 	case <-sig:
 	case <-quitCh:
 	}
+	win.close()
 
 	fmt.Println("\n" + i18n.T(lang, "app.shuttingDown"))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
 	eng.Close() // подсветка намеренно остаётся гореть последним кадром
+}
+
+// showRunningWindow просит уже работающий экземпляр показать своё окно.
+func showRunningWindow(addr string) bool {
+	c := http.Client{Timeout: 2 * time.Second}
+	resp, err := c.Post("http://"+addr+"/api/window", "application/json", nil)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode < 300
 }
 
 // alreadyRunning проверяет, что порт занят именно нашим экземпляром.

@@ -61,12 +61,14 @@ happens to support.
 | | |
 |---|---|
 | **OS** | Debian 11+ / Ubuntu 22.04+ or any x86-64 Linux |
-| **Hardware** | HyperX Alloy Origins (`03f0:0591`), full-size |
+| **Hardware** | HyperX Alloy Origins (`03f0:0591`), full-size. It also runs without one, as a preview window; another HID node can be picked by hand |
 | **Runtime** | none — the binary is statically linked |
-| **Build** | Go 1.21+ (only if building from source) |
+| **Window** | GTK 3 and WebKitGTK 4.1, already present on GNOME. Without them the interface opens in a browser |
+| **Build** | Go 1.21+; the window also needs `libgtk-3-dev` and `libwebkit2gtk-4.1-dev` |
 
-A Chromium-based browser is used to show the window in application mode. With
-Firefox only, the interface opens as a regular window instead.
+The window is drawn by a separate program, `hyperx-studio-window`. The lighting
+service does not depend on it: without the window it runs exactly as before,
+and the interface opens in a browser instead.
 
 ## Install
 
@@ -85,6 +87,7 @@ plug the keyboard back in afterwards** — permissions have to be applied anew.
 git clone https://github.com/Shehtman/hyperx-studio.git
 cd hyperx-studio
 go build -o hyperx-studio ./cmd/hyperx-studio
+go build -o hyperx-studio-window ./cmd/hyperx-window   # the window, optional
 sudo ./hyperx-studio --install-udev
 ```
 
@@ -96,6 +99,7 @@ hyperx-studio --no-window  # run in the background (used by autostart)
 hyperx-studio --quit       # stop the running instance
 hyperx-studio --apply      # apply the saved scheme and exit
 hyperx-studio --off        # turn the lighting off and exit
+hyperx-studio --browser    # show the interface in a browser instead of our own window
 ```
 
 The window can be closed — lighting keeps running. Launching again shows the
@@ -111,10 +115,38 @@ the keyboard keeps them. Animations need the program running.
 | **Static** | **Breathing** | **Spectrum cycle** |
 | **Rainbow wave** | **Two-colour wave** | **Gradient** |
 | **Twinkle** | **Rain** | **Fire** |
-| **Snake** | **Key ripple** | **Key flash** |
+| **Snake** | **Equaliser** | **Sound spectrum** |
+| **Sound pulse** | **Wave to music** | |
+| **Key ripple** | **Key flash** | |
 
 The last two are reactive and can be layered on top of any other effect, with
 their own speed, fade and colour.
+
+Every effect takes brightness, and most take speed, angle, scale, density,
+colours, background, saturation and direction — the sidebar shows only the ones
+the current effect actually uses.
+
+### Schemes
+
+Fifteen ready-made schemes come built in — Aurora, Matrix, Starfield, Lava,
+Cyberpunk, Typewriter, Bass drop and more. One click sets the effect, the
+overlay and every parameter at once. Your own combination can be saved under
+any name and appears in the same list.
+
+### Sound
+
+Four effects follow whatever is playing. The audio is taken from the system
+output, so it reacts to anything — a player, a browser tab, a game.
+
+This is the one place where an outside program is needed: the stream comes from
+`parec` (`pulseaudio-utils`) or `pw-record` (`pipewire`), one of which is
+already present on a normal Ubuntu desktop. Without them the rest of the
+program works exactly as before and the sound effects simply say so.
+
+Capture starts when a sound effect is selected and stops when it is not — no
+microphone or output is held open in the background. By default the source is
+the monitor of the current output device; any other source can be picked in the
+sidebar.
 
 ## Persistence
 

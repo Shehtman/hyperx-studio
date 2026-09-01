@@ -34,6 +34,7 @@ var messages = map[string]map[string]string{
 		"app.stopped":      "stopped",
 		"app.notRunning":   "the application is not running",
 		"app.openManually": "Open in a browser: %s",
+		"app.windowFailed": "Could not open a window of our own, handing the interface to a browser.",
 
 		"err.prefix":       "Error:",
 		"err.noDevice":     "HyperX keyboard not found (%04X:%04X)",
@@ -66,6 +67,7 @@ var messages = map[string]map[string]string{
 		"app.stopped":      "остановлено",
 		"app.notRunning":   "приложение не запущено",
 		"app.openManually": "Откройте в браузере: %s",
+		"app.windowFailed": "Своё окно открыть не удалось, отдаю интерфейс браузеру.",
 
 		"err.prefix":       "Ошибка:",
 		"err.noDevice":     "клавиатура HyperX не найдена (%04X:%04X)",

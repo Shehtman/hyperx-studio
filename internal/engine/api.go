@@ -56,6 +56,34 @@ type Snapshot struct {
 	Devices   []string             `json:"inputDevices"`
 	Connected bool                 `json:"connected"`
 	DevErr    string               `json:"devErr"`
+	// Hardware — узлы hidraw, между которыми можно выбирать.
+	Hardware []Hardware `json:"hardware"`
+
+	Presets  []Preset `json:"presets"`
+	AudioOK  bool     `json:"audioOK"`
+	AudioErr string   `json:"audioErr"`
+	AudioOn  bool     `json:"audioOn"`
+	// Level — текущая громкость, чтобы в интерфейсе был живой индикатор.
+	Level float64 `json:"audioLevel"`
+}
+
+// Status — то немногое, что нужно потоку кадров. Полный снимок для этого не
+// годится: он собирает список схем, а поток идёт десятки раз в секунду.
+type Status struct {
+	FPSReal   float64
+	Connected bool
+	Level     float64
+}
+
+func (e *Engine) Status() Status {
+	e.mu.Lock()
+	c := e.audio
+	st := Status{FPSReal: e.FPSReal, Connected: e.connected}
+	e.mu.Unlock()
+	if c != nil {
+		st.Level = c.Frame().Level
+	}
+	return st
 }
 
 func (e *Engine) Snapshot() Snapshot {
@@ -65,11 +93,19 @@ func (e *Engine) Snapshot() Snapshot {
 	if e.reader != nil {
 		devs = e.reader.Devices
 	}
+	var level float64
+	if e.audio != nil {
+		level = e.audio.Frame().Level
+	}
 	return Snapshot{
 		State: e.st, Keys: e.ctx.Keys, Width: e.ctx.W, Height: e.ctx.H,
 		Effects: effects.All, Device: e.devPath(), LEDs: keyboard.LEDCount,
 		FPSReal: e.FPSReal, Paused: e.paused,
 		InputOK: e.InputOK, Devices: devs, Connected: e.connected,
+		DevErr: e.devErr, Hardware: hardwareList(e.st.Device),
+		Presets: append(Builtin(), e.st.Presets...),
+		AudioOK: audioAvailable(), AudioErr: e.AudioErr,
+		AudioOn: e.audio != nil, Level: level,
 	}
 }
 
@@ -90,15 +126,16 @@ func (e *Engine) touch() {
 
 func (e *Engine) SetEffect(id string) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.st.Effect = id
 	e.effect = effects.New(id)
 	e.touch()
+	e.mu.Unlock()
+	// Запуск утилиты записи не мгновенный, держать на нём мьютекс нельзя.
+	go e.syncAudio()
 }
 
 func (e *Engine) SetOverlay(id string) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.st.Overlay = id
 	if id == "" {
 		e.overlay = nil
@@ -106,6 +143,18 @@ func (e *Engine) SetOverlay(id string) {
 		e.overlay = effects.New(id)
 	}
 	e.touch()
+	e.mu.Unlock()
+	go e.syncAudio()
+}
+
+// SetAudioSource выбирает, что слушать. Пустая строка — устройство вывода
+// по умолчанию.
+func (e *Engine) SetAudioSource(name string) {
+	e.mu.Lock()
+	e.st.AudioSource = name
+	e.touch()
+	e.mu.Unlock()
+	go e.syncAudio()
 }
 
 func (e *Engine) SetParams(p effects.Params) {
@@ -225,4 +274,67 @@ func (e *Engine) SetAutostart(on bool) {
 	e.st.Autostart = on
 	e.touch()
 	e.mu.Unlock()
+}
+
+// ── выбор устройства ─────────────────────────────────────────────────
+
+// Hardware — узел hidraw в том виде, в каком его показывает интерфейс.
+type Hardware struct {
+	keyboard.Info
+	// Current поднят у того узла, который сейчас используется.
+	Current bool `json:"current"`
+}
+
+// hardwareList перечисляет устройства, отмечая выбранное.
+func hardwareList(pref string) []Hardware {
+	list, err := keyboard.List()
+	if err != nil {
+		return nil
+	}
+	out := make([]Hardware, 0, len(list))
+	for _, in := range list {
+		out = append(out, Hardware{Info: in, Current: in.Path == pref})
+	}
+	return out
+}
+
+// SetDevice переключает программу на другой узел hidraw.
+//
+// Пустая строка возвращает поиск Alloy Origins по идентификаторам. Ошибку
+// открытия не прячем: человек выбрал устройство сам и должен узнать, что
+// оно не отвечает, а не гадать по тёмной клавиатуре.
+func (e *Engine) SetDevice(path string) error {
+	e.devMu.Lock()
+	defer e.devMu.Unlock()
+
+	e.mu.Lock()
+	e.st.Device = path
+	e.touch()
+	old := e.dev
+	e.dev = nil
+	e.resetSend = true
+	e.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+
+	dev, err := openDevice(path)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err != nil {
+		e.devErr = err.Error()
+		e.connected = false
+		return err
+	}
+	e.dev = dev
+	e.devErr = ""
+	e.connected = true
+	return nil
+}
+
+// DeviceError объясняет, почему устройство не открыто.
+func (e *Engine) DeviceError() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.devErr
 }
